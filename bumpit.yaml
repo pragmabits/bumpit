@@ -1,0 +1,8 @@
+repository: .
+tagMatch: "v*"
+startVersion: ""
+allowDirty: false
+output: text
+tagMessage: ""
+preRelease: ""
+promote: false

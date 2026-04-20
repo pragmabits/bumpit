@@ -1,0 +1,73 @@
+package semver
+
+import "testing"
+
+func TestParse(t *testing.T) {
+	t.Parallel()
+
+	version, err := Parse("v1.2.3")
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if version.Major != 1 || version.Minor != 2 || version.Patch != 3 {
+		t.Fatalf("unexpected version: %#v", version)
+	}
+}
+
+func TestParsePreRelease(t *testing.T) {
+	t.Parallel()
+
+	version, err := Parse("v1.2.3-beta.1+build.7")
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if version.PreRelease != "beta.1" {
+		t.Fatalf("unexpected prerelease: %q", version.PreRelease)
+	}
+	if version.BuildMetadata != "build.7" {
+		t.Fatalf("unexpected build metadata: %q", version.BuildMetadata)
+	}
+}
+
+func TestNext(t *testing.T) {
+	t.Parallel()
+
+	base := Version{Major: 1, Minor: 2, Patch: 3}
+
+	if next := base.Next(BumpPatch); next.String() != "1.2.4" {
+		t.Fatalf("patch bump mismatch: %s", next.String())
+	}
+
+	if next := base.Next(BumpMinor); next.String() != "1.3.0" {
+		t.Fatalf("minor bump mismatch: %s", next.String())
+	}
+
+	if next := base.Next(BumpMajor); next.String() != "2.0.0" {
+		t.Fatalf("major bump mismatch: %s", next.String())
+	}
+}
+
+func TestPromote(t *testing.T) {
+	t.Parallel()
+
+	version := Version{Major: 1, Minor: 2, Patch: 3, PreRelease: "beta.1", BuildMetadata: "build.7"}
+	if promoted := version.Promote(); promoted.String() != "1.2.3" {
+		t.Fatalf("promote mismatch: %s", promoted.String())
+	}
+}
+
+func TestWithPreRelease(t *testing.T) {
+	t.Parallel()
+
+	version := Version{Major: 1, Minor: 2, Patch: 3}
+	withPreRelease, err := version.WithPreRelease("rc.1")
+	if err != nil {
+		t.Fatalf("WithPreRelease returned error: %v", err)
+	}
+
+	if withPreRelease.String() != "1.2.3-rc.1" {
+		t.Fatalf("prerelease mismatch: %s", withPreRelease.String())
+	}
+}
