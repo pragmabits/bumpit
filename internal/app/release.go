@@ -66,7 +66,7 @@ func BuildReleasePlan(opts Options) (ReleasePlan, error) {
 		tagMatch = "v*"
 	}
 
-	lastTag, currentVersion, err := latestSemverTag(client, tagMatch)
+	lastTag, currentVersion, err := latestSemverTag(client, tagMatch, false)
 	if err != nil {
 		return ReleasePlan{}, err
 	}
@@ -187,12 +187,23 @@ func nextBaseVersion(current semver.Version, level semver.BumpLevel, isInitial b
 	}
 }
 
-func latestSemverTag(client gitx.Client, tagMatch string) (string, semver.Version, error) {
-	tags, err := client.TagsMergedIntoHEAD(tagMatch)
+// latestSemverTag returns the highest semantic version tag by SemVer
+// precedence. Git orders tags lexicographically or by creation date, so
+// neither `git tag -l` nor `git describe` can be trusted to answer this.
+func latestSemverTag(client gitx.Client, tagMatch string, includeUnreachable bool) (string, semver.Version, error) {
+	var tags []string
+	var err error
+	if includeUnreachable {
+		tags, err = client.Tags(tagMatch)
+	} else {
+		tags, err = client.TagsMergedIntoHEAD(tagMatch)
+	}
 	if err != nil {
 		return "", semver.Version{}, err
 	}
 
+	latestTag := ""
+	latestVersion := semver.Version{}
 	invalidTagCount := 0
 	for _, tag := range tags {
 		version, err := semver.Parse(tag)
@@ -200,7 +211,14 @@ func latestSemverTag(client gitx.Client, tagMatch string) (string, semver.Versio
 			invalidTagCount++
 			continue
 		}
-		return tag, version, nil
+		if latestTag == "" || semver.Compare(version, latestVersion) > 0 {
+			latestTag = tag
+			latestVersion = version
+		}
+	}
+
+	if latestTag != "" {
+		return latestTag, latestVersion, nil
 	}
 
 	if invalidTagCount > 0 {

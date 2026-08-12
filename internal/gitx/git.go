@@ -37,26 +37,17 @@ func (c Client) IsDirty() (bool, error) {
 	return strings.TrimSpace(stdout) != "", nil
 }
 
-func (c Client) LatestTag(match string) (string, error) {
-	args := []string{"describe", "--tags", "--abbrev=0"}
-	if match != "" {
-		args = append(args, "--match", match)
-	}
-	args = append(args, "HEAD")
-
-	stdout, stderr, err := c.run(args...)
-	if err != nil {
-		if strings.Contains(stderr, "No names found") || strings.Contains(stderr, "No tags can describe") {
-			return "", nil
-		}
-		return "", gitError(strings.Join(args, " "), stderr, err)
-	}
-
-	return strings.TrimSpace(stdout), nil
+func (c Client) Tags(match string) ([]string, error) {
+	return c.listTags(nil, match)
 }
 
 func (c Client) TagsMergedIntoHEAD(match string) ([]string, error) {
-	args := []string{"tag", "--merged", "HEAD", "--sort=-creatordate"}
+	return c.listTags([]string{"--merged", "HEAD"}, match)
+}
+
+func (c Client) listTags(filters []string, match string) ([]string, error) {
+	args := append([]string{"tag"}, filters...)
+	args = append(args, "--sort=-creatordate")
 	if match != "" {
 		args = append(args, "--list", match)
 	}
