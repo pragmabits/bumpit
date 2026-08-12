@@ -6,6 +6,40 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Shorthands are declared once and shared by every command so a letter always
+// means the same thing. Cobra reserves -h for help.
+func bindConfigFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "config", "c", "", "path to bumpit.yaml")
+}
+
+func bindRepositoryFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "repo", "r", ".", "path to the git repository")
+}
+
+func bindTagMatchFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "match", "t", "v*", "tag pattern used to filter candidate tags")
+}
+
+func bindStartVersionFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "start-version", "s", "", "version to use for the first release when no tags exist")
+}
+
+func bindAllowDirtyFlag(command *cobra.Command, target *bool) {
+	command.Flags().BoolVarP(target, "allow-dirty", "d", false, "allow a dirty working tree")
+}
+
+func bindPreReleaseFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "pre", "p", "", "prerelease label to apply, for example beta or rc.1")
+}
+
+func bindPromoteFlag(command *cobra.Command, target *bool) {
+	command.Flags().BoolVarP(target, "promote", "P", false, "promote the current prerelease to a final release")
+}
+
+func bindOutputFlag(command *cobra.Command, target *string) {
+	command.Flags().StringVarP(target, "output", "o", "text", "output format: text or json")
+}
+
 type releasePlanFlags struct {
 	configPath   string
 	repository   string
@@ -43,15 +77,15 @@ func (f releasePlanFlags) options() Options {
 }
 
 func (f *releasePlanFlags) bind(command *cobra.Command, includeOutput bool) {
-	command.Flags().StringVar(&f.configPath, "config", "", "path to bumpit.yaml")
-	command.Flags().StringVar(&f.repository, "repo", ".", "path to the git repository")
-	command.Flags().StringVar(&f.tagMatch, "match", "v*", "tag pattern used with git describe")
-	command.Flags().StringVar(&f.startVersion, "start-version", "", "version to use for the first release when no tags exist")
-	command.Flags().BoolVar(&f.allowDirty, "allow-dirty", false, "allow a dirty working tree")
-	command.Flags().StringVar(&f.preRelease, "pre", "", "prerelease label to apply, for example beta or rc.1")
-	command.Flags().BoolVar(&f.promote, "promote", false, "promote the current prerelease to a final release")
+	bindConfigFlag(command, &f.configPath)
+	bindRepositoryFlag(command, &f.repository)
+	bindTagMatchFlag(command, &f.tagMatch)
+	bindStartVersionFlag(command, &f.startVersion)
+	bindAllowDirtyFlag(command, &f.allowDirty)
+	bindPreReleaseFlag(command, &f.preRelease)
+	bindPromoteFlag(command, &f.promote)
 	if includeOutput {
-		command.Flags().StringVar(&f.output, "output", "text", "output format: text or json")
+		bindOutputFlag(command, &f.output)
 	}
 }
 
@@ -85,6 +119,63 @@ func (f *releasePlanFlags) applyConfig(command *cobra.Command) (*Config, error) 
 	}
 	if !commandFlags.Changed("promote") && config.Promote != nil {
 		f.promote = *config.Promote
+	}
+
+	return config, nil
+}
+
+type latestCommandFlags struct {
+	configPath string
+	repository string
+	tagMatch   string
+	output     string
+	all        bool
+	noPrefix   bool
+}
+
+func (f latestCommandFlags) defaults() Config {
+	return Config{
+		Repository: f.repository,
+		TagMatch:   f.tagMatch,
+		Output:     f.output,
+	}
+}
+
+func (f latestCommandFlags) options() LatestOptions {
+	return LatestOptions{
+		Repository: f.repository,
+		TagMatch:   f.tagMatch,
+		All:        f.all,
+	}
+}
+
+func (f *latestCommandFlags) bind(command *cobra.Command) {
+	bindConfigFlag(command, &f.configPath)
+	bindRepositoryFlag(command, &f.repository)
+	bindTagMatchFlag(command, &f.tagMatch)
+	bindOutputFlag(command, &f.output)
+	command.Flags().BoolVarP(&f.all, "all", "a", false, "consider every tag in the repository, not only the ones reachable from HEAD")
+	command.Flags().BoolVarP(&f.noPrefix, "no-prefix", "n", false, "print the bare version instead of the tag, dropping the v prefix")
+}
+
+func (f *latestCommandFlags) applyConfig(command *cobra.Command) (*Config, error) {
+	config, _, err := loadConfig(f.configPath, f.repository, f.defaults())
+	if err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, nil
+	}
+
+	flags := command.Flags()
+	if !flags.Changed("repo") && config.Repository != "" {
+		f.repository = config.Repository
+	}
+	if !flags.Changed("match") && config.TagMatch != "" {
+		f.tagMatch = config.TagMatch
+	}
+	if !flags.Changed("output") && config.Output != "" {
+		f.output = config.Output
 	}
 
 	return config, nil
@@ -128,14 +219,14 @@ func (f tagCommandFlags) options() Options {
 }
 
 func (f *tagCommandFlags) bind(command *cobra.Command) {
-	command.Flags().StringVar(&f.configPath, "config", "", "path to bumpit.yaml")
-	command.Flags().StringVar(&f.repository, "repo", ".", "path to the git repository")
-	command.Flags().StringVar(&f.tagMatch, "match", "v*", "tag pattern used with git describe")
-	command.Flags().StringVar(&f.startVersion, "start-version", "", "version to use for the first release when no tags exist")
-	command.Flags().BoolVar(&f.allowDirty, "allow-dirty", false, "allow a dirty working tree")
-	command.Flags().StringVar(&f.preRelease, "pre", "", "prerelease label to apply, for example beta or rc.1")
-	command.Flags().BoolVar(&f.promote, "promote", false, "promote the current prerelease to a final release")
-	command.Flags().StringVar(&f.message, "message", "", "annotated tag message")
+	bindConfigFlag(command, &f.configPath)
+	bindRepositoryFlag(command, &f.repository)
+	bindTagMatchFlag(command, &f.tagMatch)
+	bindStartVersionFlag(command, &f.startVersion)
+	bindAllowDirtyFlag(command, &f.allowDirty)
+	bindPreReleaseFlag(command, &f.preRelease)
+	bindPromoteFlag(command, &f.promote)
+	command.Flags().StringVarP(&f.message, "message", "m", "", "annotated tag message")
 }
 
 func (f *tagCommandFlags) applyConfig(command *cobra.Command) (*Config, error) {

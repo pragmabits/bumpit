@@ -119,6 +119,167 @@ func TestCLIEndToEndUsesExplicitPreRelease(t *testing.T) {
 	}
 }
 
+func TestCLIEndToEndLatest(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "v1.9.0", "-m", "Release v1.9.0")
+	commitFile(t, repositoryPath, "feature.txt", "feature", "feat: another feature")
+	runGit(t, repositoryPath, "tag", "-a", "v1.10.0", "-m", "Release v1.10.0")
+
+	binaryPath := buildCLI(t)
+
+	latestOutput, err := runCLI(binaryPath, "latest", "--repo", repositoryPath)
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, latestOutput)
+	}
+	if strings.TrimSpace(latestOutput) != "v1.10.0" {
+		t.Fatalf("unexpected latest output: %q", latestOutput)
+	}
+
+	jsonOutput, err := runCLI(binaryPath, "latest", "--repo", repositoryPath, "--output", "json")
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, jsonOutput)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(jsonOutput), &payload); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if payload["tag"] != "v1.10.0" {
+		t.Fatalf("unexpected tag: %#v", payload["tag"])
+	}
+	if payload["version"] != "1.10.0" {
+		t.Fatalf("unexpected version: %#v", payload["version"])
+	}
+	if payload["found"] != true {
+		t.Fatalf("unexpected found: %#v", payload["found"])
+	}
+}
+
+func TestCLIEndToEndShortFlags(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "v1.2.3", "-m", "Release v1.2.3")
+	commitFile(t, repositoryPath, "feature.txt", "feature", "feat(api): add export endpoint")
+
+	binaryPath := buildCLI(t)
+
+	latestOutput, err := runCLI(binaryPath, "latest", "-r", repositoryPath, "-t", "v*")
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, latestOutput)
+	}
+	if strings.TrimSpace(latestOutput) != "v1.2.3" {
+		t.Fatalf("unexpected latest output: %q", latestOutput)
+	}
+
+	nextOutput, err := runCLI(binaryPath, "next", "-r", repositoryPath, "-p", "beta")
+	if err != nil {
+		t.Fatalf("next command returned error: %v\noutput: %s", err, nextOutput)
+	}
+	if strings.TrimSpace(nextOutput) != "v1.3.0-beta" {
+		t.Fatalf("unexpected next output: %q", nextOutput)
+	}
+
+	explainOutput, err := runCLI(binaryPath, "explain", "-r", repositoryPath, "-o", "json")
+	if err != nil {
+		t.Fatalf("explain command returned error: %v\noutput: %s", err, explainOutput)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(explainOutput), &payload); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if payload["next_tag"] != "v1.3.0" {
+		t.Fatalf("unexpected next_tag: %#v", payload["next_tag"])
+	}
+
+	tagOutput, err := runCLI(binaryPath, "tag", "-r", repositoryPath, "-m", "Release from short flag")
+	if err != nil {
+		t.Fatalf("tag command returned error: %v\noutput: %s", err, tagOutput)
+	}
+	if strings.TrimSpace(tagOutput) != "created tag v1.3.0" {
+		t.Fatalf("unexpected tag output: %q", tagOutput)
+	}
+
+	annotationOutput, err := runGitOutput(repositoryPath, "tag", "-n99", "--list", "v1.3.0")
+	if err != nil {
+		t.Fatalf("runGitOutput returned error: %v", err)
+	}
+	if !strings.Contains(annotationOutput, "Release from short flag") {
+		t.Fatalf("unexpected tag annotation: %q", annotationOutput)
+	}
+}
+
+func TestCLIEndToEndLatestNoPrefix(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "v1.4.0-rc.2", "-m", "Release v1.4.0-rc.2")
+
+	binaryPath := buildCLI(t)
+
+	tagOutput, err := runCLI(binaryPath, "latest", "--repo", repositoryPath)
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, tagOutput)
+	}
+	if strings.TrimSpace(tagOutput) != "v1.4.0-rc.2" {
+		t.Fatalf("unexpected latest output: %q", tagOutput)
+	}
+
+	versionOutput, err := runCLI(binaryPath, "latest", "--repo", repositoryPath, "--no-prefix")
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, versionOutput)
+	}
+	if strings.TrimSpace(versionOutput) != "1.4.0-rc.2" {
+		t.Fatalf("unexpected no-prefix output: %q", versionOutput)
+	}
+
+	shortOutput, err := runCLI(binaryPath, "latest", "-n", "-r", repositoryPath)
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, shortOutput)
+	}
+	if strings.TrimSpace(shortOutput) != "1.4.0-rc.2" {
+		t.Fatalf("unexpected short flag output: %q", shortOutput)
+	}
+}
+
+func TestCLIEndToEndLatestNoPrefixWithoutTags(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+
+	binaryPath := buildCLI(t)
+	latestOutput, err := runCLI(binaryPath, "latest", "--repo", repositoryPath, "--no-prefix")
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, latestOutput)
+	}
+	if strings.TrimSpace(latestOutput) != "no tag" {
+		t.Fatalf("unexpected latest output: %q", latestOutput)
+	}
+}
+
+func TestCLIEndToEndLatestWithoutTags(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+
+	binaryPath := buildCLI(t)
+	latestOutput, err := runCLI(binaryPath, "latest", "--repo", repositoryPath)
+	if err != nil {
+		t.Fatalf("latest command returned error: %v\noutput: %s", err, latestOutput)
+	}
+	if strings.TrimSpace(latestOutput) != "no tag" {
+		t.Fatalf("unexpected latest output: %q", latestOutput)
+	}
+}
+
 func buildCLI(t *testing.T) string {
 	t.Helper()
 

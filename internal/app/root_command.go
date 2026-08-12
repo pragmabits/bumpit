@@ -28,6 +28,7 @@ func newRootCmd() *cobra.Command {
 	}
 	rootCommand.SetOut(os.Stdout)
 	rootCommand.SetErr(os.Stderr)
+	rootCommand.AddCommand(newLatestCmd())
 	rootCommand.AddCommand(newNextCmd())
 	rootCommand.AddCommand(newExplainCmd())
 	rootCommand.AddCommand(newTagCmd())
