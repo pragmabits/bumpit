@@ -58,6 +58,43 @@ func TestPromote(t *testing.T) {
 	}
 }
 
+func TestCompare(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		left     string
+		right    string
+		expected int
+	}{
+		{"1.9.0", "1.10.0", -1},
+		{"v1.10.0", "v1.9.0", 1},
+		{"1.2.3", "1.2.3", 0},
+		{"2.0.0", "10.0.0", -1},
+		{"1.0.0-rc.1", "1.0.0", -1},
+		{"1.0.0", "1.0.0-rc.1", 1},
+		{"1.0.0-alpha", "1.0.0-beta", -1},
+		{"1.0.0-rc.2", "1.0.0-rc.10", -1},
+		{"1.0.0-alpha", "1.0.0-alpha.1", -1},
+		{"1.0.0-1", "1.0.0-alpha", -1},
+		{"1.2.3+build.1", "1.2.3+build.9", 0},
+	}
+
+	for _, testCase := range testCases {
+		left, err := Parse(testCase.left)
+		if err != nil {
+			t.Fatalf("Parse(%q) returned error: %v", testCase.left, err)
+		}
+		right, err := Parse(testCase.right)
+		if err != nil {
+			t.Fatalf("Parse(%q) returned error: %v", testCase.right, err)
+		}
+
+		if result := Compare(left, right); result != testCase.expected {
+			t.Fatalf("Compare(%q, %q) = %d, want %d", testCase.left, testCase.right, result, testCase.expected)
+		}
+	}
+}
+
 func TestWithPreRelease(t *testing.T) {
 	t.Parallel()
 

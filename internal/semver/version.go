@@ -47,6 +47,71 @@ type Version struct {
 	BuildMetadata string
 }
 
+// Compare orders two versions by SemVer precedence, returning a negative
+// number when left is older, zero when both rank the same and a positive
+// number when left is newer. Build metadata is ignored, as the spec requires.
+func Compare(left, right Version) int {
+	if result := compareNumbers(left.Major, right.Major); result != 0 {
+		return result
+	}
+	if result := compareNumbers(left.Minor, right.Minor); result != 0 {
+		return result
+	}
+	if result := compareNumbers(left.Patch, right.Patch); result != 0 {
+		return result
+	}
+	return comparePreRelease(left.PreRelease, right.PreRelease)
+}
+
+func comparePreRelease(left, right string) int {
+	if left == right {
+		return 0
+	}
+	if left == "" {
+		return 1
+	}
+	if right == "" {
+		return -1
+	}
+
+	leftIdentifiers := strings.Split(left, ".")
+	rightIdentifiers := strings.Split(right, ".")
+	for index := 0; index < len(leftIdentifiers) && index < len(rightIdentifiers); index++ {
+		if result := comparePreReleaseIdentifier(leftIdentifiers[index], rightIdentifiers[index]); result != 0 {
+			return result
+		}
+	}
+
+	return compareNumbers(len(leftIdentifiers), len(rightIdentifiers))
+}
+
+func comparePreReleaseIdentifier(left, right string) int {
+	leftNumber, leftErr := strconv.Atoi(left)
+	rightNumber, rightErr := strconv.Atoi(right)
+
+	switch {
+	case leftErr == nil && rightErr == nil:
+		return compareNumbers(leftNumber, rightNumber)
+	case leftErr == nil:
+		return -1
+	case rightErr == nil:
+		return 1
+	default:
+		return strings.Compare(left, right)
+	}
+}
+
+func compareNumbers(left, right int) int {
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func Parse(input string) (Version, error) {
 	matches := versionPattern.FindStringSubmatch(strings.TrimSpace(input))
 	if matches == nil {
