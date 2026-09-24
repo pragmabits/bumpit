@@ -1,3 +1,6 @@
+// Package app is the bumpit command: its subcommands, flags and config, and
+// the release plan they share, which reads the version tags and the commits
+// after them and computes the next version.
 package app
 
 import (
@@ -7,9 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func Execute(args []string) int {
+// Execute runs bumpit with the given arguments and returns the exit code.
+func Execute(arguments []string) int {
 	rootCommand := newRootCmd()
-	rootCommand.SetArgs(args)
+	rootCommand.SetArgs(arguments)
 
 	if err := rootCommand.Execute(); err != nil {
 		fmt.Fprintln(rootCommand.ErrOrStderr(), err)
@@ -22,7 +26,7 @@ func newRootCmd() *cobra.Command {
 	rootCommand := &cobra.Command{
 		Use:           "bumpit",
 		Short:         "Compute the next semantic version from local git history",
-		Long:          "bumpit reads the commits after the latest semantic version tag and computes the next release using Conventional Commits and SemVer rules.",
+		Long:          "bumpit reads the commits after the latest semantic version tag and computes the next release using Conventional Commits and SemVer rules. In a Go repository it versions one module at a time: the root module by default, or the one --module names, from its own tags and the commits under its directory.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -32,6 +36,7 @@ func newRootCmd() *cobra.Command {
 	rootCommand.AddCommand(newNextCmd())
 	rootCommand.AddCommand(newExplainCmd())
 	rootCommand.AddCommand(newTagCmd())
+	rootCommand.AddCommand(newModulesCmd())
 	rootCommand.AddCommand(newVersionCmd())
 	return rootCommand
 }

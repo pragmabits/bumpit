@@ -119,6 +119,76 @@ func TestCLIEndToEndUsesExplicitPreRelease(t *testing.T) {
 	}
 }
 
+func TestCLIEndToEndReleaseAs(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "v0.4.0", "-m", "Release v0.4.0")
+	commitFile(t, repositoryPath, "feature.txt", "feature", "feat(api): stabilize the API")
+
+	binaryPath := buildCLI(t)
+
+	for _, flag := range []string{"--release-as", "-V"} {
+		nextOutput, err := runCLI(binaryPath, "next", "--repo", repositoryPath, flag, "1.0.0")
+		if err != nil {
+			t.Fatalf("next %s returned error: %v\noutput: %s", flag, err, nextOutput)
+		}
+		if strings.TrimSpace(nextOutput) != "v1.0.0" {
+			t.Fatalf("unexpected next %s output: %q", flag, nextOutput)
+		}
+	}
+}
+
+func TestCLIEndToEndGoModules(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initGoRepository(t)
+	commitFile(t, repositoryPath, "tool/main.txt", "main", "feat(tool): add a flag")
+
+	binaryPath := buildCLI(t)
+
+	commands := []struct {
+		arguments []string
+		expected  string
+	}{
+		{[]string{"next", "-r", repositoryPath}, "no release"},
+		{[]string{"next", "-r", repositoryPath, "-g", "tool"}, "tool/v0.2.0"},
+		{[]string{"latest", "-r", repositoryPath, "--module", "tool"}, "tool/v0.1.0"},
+	}
+	for _, command := range commands {
+		output, err := runCLI(binaryPath, command.arguments...)
+		if err != nil {
+			t.Fatalf("%v returned error: %v\noutput: %s", command.arguments, err, output)
+		}
+		if strings.TrimSpace(output) != command.expected {
+			t.Errorf("%v printed %q, want %q", command.arguments, strings.TrimSpace(output), command.expected)
+		}
+	}
+
+	modulesOutput, err := runCLI(binaryPath, "modules", "-r", repositoryPath)
+	if err != nil {
+		t.Fatalf("modules returned error: %v\noutput: %s", err, modulesOutput)
+	}
+	for _, text := range []string{"example.com/repository/tool", "tool/v0.2.0", "no release"} {
+		if !strings.Contains(modulesOutput, text) {
+			t.Errorf("modules output lacks %q:\n%s", text, modulesOutput)
+		}
+	}
+
+	jsonOutput, err := runCLI(binaryPath, "modules", "-r", repositoryPath, "-o", "json")
+	if err != nil {
+		t.Fatalf("modules -o json returned error: %v\noutput: %s", err, jsonOutput)
+	}
+	var releases []ModuleRelease
+	if err := json.Unmarshal([]byte(jsonOutput), &releases); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v\noutput: %s", err, jsonOutput)
+	}
+	if len(releases) != 2 || releases[1].NextTag != "tool/v0.2.0" {
+		t.Fatalf("unexpected modules payload: %#v", releases)
+	}
+}
+
 func TestCLIEndToEndLatest(t *testing.T) {
 	t.Parallel()
 
@@ -295,14 +365,14 @@ func buildCLI(t *testing.T) string {
 	return binaryPath
 }
 
-func runCLI(binaryPath string, args ...string) (string, error) {
-	command := exec.Command(binaryPath, args...)
+func runCLI(binaryPath string, arguments ...string) (string, error) {
+	command := exec.Command(binaryPath, arguments...)
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
 
-func runGitOutput(repositoryPath string, args ...string) (string, error) {
-	command := exec.Command("git", args...)
+func runGitOutput(repositoryPath string, arguments ...string) (string, error) {
+	command := exec.Command("git", arguments...)
 	command.Dir = repositoryPath
 	output, err := command.CombinedOutput()
 	return string(output), err

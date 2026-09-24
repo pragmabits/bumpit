@@ -20,13 +20,16 @@ func TestCommandFlagShorthands(t *testing.T) {
 		"allow-dirty":   "d",
 		"pre":           "p",
 		"promote":       "P",
+		"release-as":    "V",
+		"module":        "g",
 	}
 
 	expected := map[string]map[string]string{
-		"latest":  {"config": "c", "repo": "r", "match": "t", "output": "o", "all": "a", "no-prefix": "n"},
+		"latest":  {"config": "c", "repo": "r", "match": "t", "output": "o", "all": "a", "no-prefix": "n", "module": "g"},
 		"next":    withShorthands(releaseShorthands, map[string]string{"output": "o"}),
 		"explain": withShorthands(releaseShorthands, map[string]string{"output": "o"}),
 		"tag":     withShorthands(releaseShorthands, map[string]string{"message": "m"}),
+		"modules": {"config": "c", "repo": "r", "output": "o", "allow-dirty": "d"},
 	}
 
 	for _, command := range newRootCmd().Commands() {

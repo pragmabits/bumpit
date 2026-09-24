@@ -30,14 +30,6 @@ func newTagCmd() *cobra.Command {
 			}
 
 			client := gitx.New(flags.repository)
-			tagExists, err := client.TagExists(plan.NextTag)
-			if err != nil {
-				return err
-			}
-			if tagExists {
-				return fmt.Errorf("tag %s already exists", plan.NextTag)
-			}
-
 			tagMessage := resolveTagMessage(flags.message, config, plan.NextTag)
 			if err := client.CreateAnnotatedTag(plan.NextTag, tagMessage); err != nil {
 				return err

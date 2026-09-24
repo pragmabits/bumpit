@@ -1,3 +1,5 @@
+// Package gitx runs the git commands bumpit reads a repository with and
+// creates its tags with. It never writes anything else and never pushes.
 package gitx
 
 import (
@@ -7,20 +9,24 @@ import (
 	"strings"
 )
 
+// Client runs git in Repository, or in the working directory when it is empty.
 type Client struct {
 	Repository string
 }
 
+// Commit is one commit as bumpit reads it.
 type Commit struct {
 	Hash    string
 	Subject string
 	Body    string
 }
 
+// New returns a client for the repository at the given path.
 func New(repository string) Client {
 	return Client{Repository: repository}
 }
 
+// EnsureRepository fails when the path is not inside a git repository.
 func (c Client) EnsureRepository() error {
 	_, stderr, err := c.run("rev-parse", "--git-dir")
 	if err != nil {
@@ -29,6 +35,7 @@ func (c Client) EnsureRepository() error {
 	return nil
 }
 
+// IsDirty reports uncommitted changes, untracked files included.
 func (c Client) IsDirty() (bool, error) {
 	stdout, stderr, err := c.run("status", "--porcelain")
 	if err != nil {
@@ -37,24 +44,27 @@ func (c Client) IsDirty() (bool, error) {
 	return strings.TrimSpace(stdout) != "", nil
 }
 
+// Tags returns every tag matching the glob pattern match, newest first by
+// creation date, an order that says nothing about their versions.
 func (c Client) Tags(match string) ([]string, error) {
 	return c.listTags(nil, match)
 }
 
+// TagsMergedIntoHEAD is Tags restricted to the tags reachable from HEAD.
 func (c Client) TagsMergedIntoHEAD(match string) ([]string, error) {
 	return c.listTags([]string{"--merged", "HEAD"}, match)
 }
 
 func (c Client) listTags(filters []string, match string) ([]string, error) {
-	args := append([]string{"tag"}, filters...)
-	args = append(args, "--sort=-creatordate")
+	arguments := append([]string{"tag"}, filters...)
+	arguments = append(arguments, "--sort=-creatordate")
 	if match != "" {
-		args = append(args, "--list", match)
+		arguments = append(arguments, "--list", match)
 	}
 
-	stdout, stderr, err := c.run(args...)
+	stdout, stderr, err := c.run(arguments...)
 	if err != nil {
-		return nil, gitError(strings.Join(args, " "), stderr, err)
+		return nil, gitError(strings.Join(arguments, " "), stderr, err)
 	}
 
 	var tags []string
@@ -69,17 +79,22 @@ func (c Client) listTags(filters []string, match string) ([]string, error) {
 	return tags, nil
 }
 
-func (c Client) CommitsSince(tag string) ([]Commit, error) {
-	args := []string{"log", "--reverse", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e"}
+// CommitsSince returns the commits after tag, oldest first, or every commit
+// when tag is empty. Given pathspecs, only the commits touching them count.
+func (c Client) CommitsSince(tag string, pathspecs ...string) ([]Commit, error) {
+	arguments := []string{"log", "--reverse", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e"}
 	if tag != "" {
-		args = append(args, fmt.Sprintf("%s..HEAD", tag))
+		arguments = append(arguments, fmt.Sprintf("%s..HEAD", tag))
 	} else {
-		args = append(args, "HEAD")
+		arguments = append(arguments, "HEAD")
+	}
+	if len(pathspecs) > 0 {
+		arguments = append(append(arguments, "--"), pathspecs...)
 	}
 
-	stdout, stderr, err := c.run(args...)
+	stdout, stderr, err := c.run(arguments...)
 	if err != nil {
-		return nil, gitError(strings.Join(args, " "), stderr, err)
+		return nil, gitError(strings.Join(arguments, " "), stderr, err)
 	}
 
 	var commits []Commit
@@ -104,6 +119,33 @@ func (c Client) CommitsSince(tag string) ([]Commit, error) {
 	return commits, nil
 }
 
+// Top returns the absolute path of the top directory of the working tree.
+func (c Client) Top() (string, error) {
+	stdout, stderr, err := c.run("rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", gitError("rev-parse --show-toplevel", stderr, err)
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// TrackedFiles returns the tracked files matching pathspec, relative to the
+// top directory whichever directory the client runs in.
+func (c Client) TrackedFiles(pathspec string) ([]string, error) {
+	stdout, stderr, err := c.run("ls-files", "--full-name", "-z", "--", pathspec)
+	if err != nil {
+		return nil, gitError("ls-files "+pathspec, stderr, err)
+	}
+
+	var files []string
+	for file := range strings.SplitSeq(stdout, "\x00") {
+		if file != "" {
+			files = append(files, file)
+		}
+	}
+	return files, nil
+}
+
+// TagExists reports whether a tag with the given name exists, on any branch.
 func (c Client) TagExists(name string) (bool, error) {
 	_, stderr, err := c.run("rev-parse", "-q", "--verify", "refs/tags/"+name)
 	if err != nil {
@@ -115,6 +157,7 @@ func (c Client) TagExists(name string) (bool, error) {
 	return true, nil
 }
 
+// CreateAnnotatedTag creates an annotated tag at HEAD, locally.
 func (c Client) CreateAnnotatedTag(name, message string) error {
 	_, stderr, err := c.run("tag", "-a", name, "-m", message)
 	if err != nil {
@@ -123,8 +166,8 @@ func (c Client) CreateAnnotatedTag(name, message string) error {
 	return nil
 }
 
-func (c Client) run(args ...string) (string, string, error) {
-	cmd := exec.Command("git", args...)
+func (c Client) run(arguments ...string) (string, string, error) {
+	cmd := exec.Command("git", arguments...)
 	if c.Repository != "" {
 		cmd.Dir = c.Repository
 	}

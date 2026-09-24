@@ -74,6 +74,25 @@ func TestLoadConfigSupportsPreReleaseSettings(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAcceptsStartVersionWithPrefix(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	path := filepath.Join(directory, "bumpit.yaml")
+	content := []byte("repository: .\ntagMatch: v*\nstartVersion: v1.2.3\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	config, _, err := LoadConfig(path, Config{Repository: ".", TagMatch: "v*", Output: "text"})
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if config.StartVersion != "v1.2.3" {
+		t.Fatalf("unexpected startVersion: %s", config.StartVersion)
+	}
+}
+
 func TestDiscoverConfig(t *testing.T) {
 	t.Parallel()
 

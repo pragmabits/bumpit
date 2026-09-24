@@ -81,6 +81,61 @@ func TestFindLatestTagSkipsNonSemverTags(t *testing.T) {
 	}
 }
 
+func TestFindLatestTagWithCustomPrefix(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "release-1.0.0", "-m", "Release 1.0.0")
+	runGit(t, repositoryPath, "tag", "-a", "release-1.2.0", "-m", "Release 1.2.0")
+
+	latest, err := FindLatestTag(LatestOptions{Repository: repositoryPath, TagMatch: "release-*"})
+	if err != nil {
+		t.Fatalf("FindLatestTag returned error: %v", err)
+	}
+
+	if latest.Tag != "release-1.2.0" || latest.Version != "1.2.0" {
+		t.Fatalf("unexpected latest tag: %s (%s)", latest.Tag, latest.Version)
+	}
+}
+
+func TestFindLatestTagForNestedModule(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "v9.0.0", "-m", "Root module")
+	runGit(t, repositoryPath, "tag", "-a", "cmd/tool/v0.1.0", "-m", "Tool 0.1.0")
+	runGit(t, repositoryPath, "tag", "-a", "cmd/tool/v0.2.0", "-m", "Tool 0.2.0")
+
+	latest, err := FindLatestTag(LatestOptions{Repository: repositoryPath, TagMatch: "cmd/tool/v*"})
+	if err != nil {
+		t.Fatalf("FindLatestTag returned error: %v", err)
+	}
+
+	if latest.Tag != "cmd/tool/v0.2.0" || latest.Version != "0.2.0" {
+		t.Fatalf("unexpected latest tag: %s (%s)", latest.Tag, latest.Version)
+	}
+}
+
+func TestFindLatestTagIgnoresLeadingZeroes(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "base.txt", "base", "feat: initial release")
+	runGit(t, repositoryPath, "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+	runGit(t, repositoryPath, "tag", "-a", "v01.02.03", "-m", "Not a semantic version")
+
+	latest, err := FindLatestTag(LatestOptions{Repository: repositoryPath})
+	if err != nil {
+		t.Fatalf("FindLatestTag returned error: %v", err)
+	}
+
+	if latest.Tag != "v1.0.0" {
+		t.Fatalf("unexpected latest tag: %s", latest.Tag)
+	}
+}
+
 func TestFindLatestTagReportsMissingTag(t *testing.T) {
 	t.Parallel()
 
