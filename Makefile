@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 BINARY_NAME := bumpit
-MAIN_PACKAGE := ./cmd/bumpit
+MAIN_PACKAGE := .
 BUILD_DIR := bin
 VERSION_VAR := github.com/pragmabits/bumpit/internal/app.buildVersion
 

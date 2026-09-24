@@ -74,14 +74,60 @@ func TestCLIEndToEndTagUsesConfigMessage(t *testing.T) {
 func TestCLIEndToEndVersion(t *testing.T) {
 	t.Parallel()
 
-	binaryPath := buildCLI(t)
+	t.Run("recorded by the go command", func(t *testing.T) {
+		t.Parallel()
+
+		binaryPath := buildCLI(t)
+		want := recordedVersion(t, binaryPath)
+		assertVersion(t, binaryPath, want)
+	})
+
+	t.Run("set at link time", func(t *testing.T) {
+		t.Parallel()
+
+		binaryPath := buildCLI(t, "-ldflags", "-X github.com/pragmabits/bumpit/internal/app.buildVersion=v9.8.7")
+		assertVersion(t, binaryPath, "v9.8.7")
+	})
+}
+
+// assertVersion checks that both bumpit version and bumpit --version report
+// want.
+func assertVersion(t *testing.T, binaryPath, want string) {
+	t.Helper()
+
 	versionOutput, err := runCLI(binaryPath, "version")
 	if err != nil {
 		t.Fatalf("version command returned error: %v\noutput: %s", err, versionOutput)
 	}
-	if strings.TrimSpace(versionOutput) != "dev" {
-		t.Fatalf("unexpected version output: %q", versionOutput)
+	if strings.TrimSpace(versionOutput) != want {
+		t.Errorf("bumpit version printed %q, want %q", strings.TrimSpace(versionOutput), want)
 	}
+
+	flagOutput, err := runCLI(binaryPath, "--version")
+	if err != nil {
+		t.Fatalf("--version returned error: %v\noutput: %s", err, flagOutput)
+	}
+	if strings.TrimSpace(flagOutput) != "bumpit version "+want {
+		t.Errorf("bumpit --version printed %q, want %q", strings.TrimSpace(flagOutput), "bumpit version "+want)
+	}
+}
+
+// recordedVersion is the main module version the go command recorded in the
+// binary, as go version -m prints it, or "dev" when it recorded none.
+func recordedVersion(t *testing.T, binaryPath string) string {
+	t.Helper()
+
+	output, err := exec.Command("go", "version", "-m", binaryPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go version -m failed: %v\n%s", err, string(output))
+	}
+	for line := range strings.SplitSeq(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "mod" && fields[2] != "(devel)" {
+			return fields[2]
+		}
+	}
+	return "dev"
 }
 
 func TestCLIEndToEndPromotePreRelease(t *testing.T) {
@@ -350,13 +396,16 @@ func TestCLIEndToEndLatestWithoutTags(t *testing.T) {
 	}
 }
 
-func buildCLI(t *testing.T) string {
+// buildCLI builds bumpit into a temporary directory, passing buildFlags to go
+// build, and returns the binary's path.
+func buildCLI(t *testing.T, buildFlags ...string) string {
 	t.Helper()
 
 	projectRoot := projectRoot(t)
 	binaryPath := filepath.Join(t.TempDir(), "bumpit")
 
-	command := exec.Command("go", "build", "-o", binaryPath, "./cmd/bumpit")
+	arguments := append(append([]string{"build"}, buildFlags...), "-o", binaryPath, ".")
+	command := exec.Command("go", arguments...)
 	command.Dir = projectRoot
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\n%s", err, string(output))
