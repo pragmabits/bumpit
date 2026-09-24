@@ -16,7 +16,7 @@ Most auto-versioning tools are wired into CI/CD. `bumpit` keeps the decision loc
 go install github.com/pragmabits/bumpit@latest
 ```
 
-Up to `v0.3.0` the command lived in `cmd/bumpit`, so those versions install with `go install github.com/pragmabits/bumpit/cmd/bumpit@v0.3.0`.
+bumpit needs Go 1.26.2 or newer, the version its `go.mod` declares. Up to `v0.3.0` the command lived in `cmd/bumpit`, so those versions install with `go install github.com/pragmabits/bumpit/cmd/bumpit@v0.3.0`.
 
 ## Commands
 
@@ -27,6 +27,7 @@ bumpit explain
 bumpit tag
 bumpit modules
 bumpit version     # or bumpit --version
+bumpit completion  # bash, zsh, fish or powershell
 bumpit help
 bumpit next --help
 ```
@@ -70,8 +71,8 @@ Every flag has a short form, and a letter always means the same thing across com
 
 | Short | Long | Commands | Description |
 | --- | --- | --- | --- |
-| `-c` | `--config` | all | path to `bumpit.yaml` |
-| `-r` | `--repo` | all | path to the git repository |
+| `-c` | `--config` | `latest`, `next`, `explain`, `tag`, `modules` | path to `bumpit.yaml` |
+| `-r` | `--repo` | `latest`, `next`, `explain`, `tag`, `modules` | path to the git repository |
 | `-t` | `--match` | `latest`, `next`, `explain`, `tag` | tag pattern used to filter candidate tags; default `v*`, or the Go module's tag prefix |
 | `-g` | `--module` | `latest`, `next`, `explain`, `tag` | Go module directory to version, relative to `--repo` |
 | `-o` | `--output` | `latest`, `next`, `explain`, `modules` | output format: `text` or `json` |
@@ -165,7 +166,9 @@ DIRECTORY  MODULE                           CURRENT          NEXT
 cmd/tool   example.com/repository/cmd/tool  cmd/tool/v0.1.0  no release
 ```
 
-and `bumpit explain` shows the module and who still requires the old version:
+With `--output json` each module carries `directory`, `path`, `current_tag`, `next_tag` and `has_release`, and `error` in place of the next tag when its plan failed, so one module that cannot be planned does not hide the others.
+
+`bumpit explain` shows the module and who still requires the old version:
 
 ```text
 Module: example.com/repository
@@ -223,7 +226,7 @@ promote: false
 - the tool creates annotated local tags only
 - the tool never pushes tags automatically
 - the CLI is built with Cobra
-- `bumpit next` returns exit code `0` and prints `no release` when no releasable commits exist
+- `bumpit next` returns exit code `0` and prints `no release` when no releasable commits exist, and `bumpit tag` then fails with `no releasable commits found; refusing to create a tag`
 - `--pre` applies an explicit prerelease label such as `beta` or `rc.1`
 - `--promote` removes the current prerelease suffix and produces the final release for the same base version
 - `--start-version` and `--release-as` take the version with or without the tag prefix
@@ -238,4 +241,16 @@ promote: false
 go build -ldflags "-X github.com/pragmabits/bumpit/internal/app.buildVersion=v1.2.3" .
 ```
 
-Without it they report the version the go command records in every binary: the version asked of `go install github.com/pragmabits/bumpit@<version>`, and for a build from a clone the version git gives, such as `v0.3.0` at a clean tagged commit or `v0.3.0+dirty` with uncommitted changes. A build that records neither reports `dev`, which is also what every release up to `v0.3.0` reports.
+Without it they report the version the go command records in every binary: the version asked of `go install github.com/pragmabits/bumpit@<version>`, and for a build from a clone the version git gives, such as `v0.4.0` at a clean tagged commit or `v0.4.0+dirty` with uncommitted changes. A build that records neither reports `dev`, which is also what every release up to `v0.3.0` reports.
+
+## Development
+
+```bash
+make test      # go test ./...
+make lint      # golangci-lint run ./..., with .golangci.yml; needs golangci-lint installed
+make build     # ./bin/bumpit, with the version from git describe
+make install   # go install, with the same version
+make help      # every target
+```
+
+The end-to-end tests build the command and run it against temporary git repositories, so they need `git` on the `PATH`.

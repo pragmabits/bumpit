@@ -31,8 +31,8 @@ func version() string {
 
 // resolveVersion prefers the version set at link time. Without one it takes
 // the main module version the go command records in every binary: the version
-// go install ...@v0.3.0 fetched, or for a local build the one derived from
-// git, such as v0.3.0 at a clean tagged commit. A development build without
+// go install ...@v0.4.0 fetched, or for a local build the one derived from
+// git, such as v0.4.0 at a clean tagged commit. A development build without
 // either is "dev".
 func resolveVersion(linked string, info *debug.BuildInfo) string {
 	switch {
