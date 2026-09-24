@@ -11,7 +11,7 @@ LDFLAGS := -X $(VERSION_VAR)=$(VERSION)
 RELEASE_TARGETS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64
 RELEASE_BUILD_TARGETS := build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64 build-windows-amd64
 
-.PHONY: help fmt test tidy build install run clean release build-target $(RELEASE_BUILD_TARGETS)
+.PHONY: help fmt test lint tidy build install run clean release build-target $(RELEASE_BUILD_TARGETS)
 
 help:
 	@printf '%s\n' \
@@ -19,6 +19,7 @@ help:
 		'make install      Install the CLI with buildVersion ldflags' \
 		'make run          Run the CLI locally, pass ARGS="..." to forward arguments' \
 		'make test         Run the Go test suite' \
+		'make lint         Run golangci-lint with .golangci.yml' \
 		'make fmt          Format all Go files' \
 		'make tidy         Run go mod tidy' \
 		'make clean        Remove build artifacts' \
@@ -30,6 +31,9 @@ fmt:
 
 test:
 	@go test ./...
+
+lint:
+	@golangci-lint run ./...
 
 tidy:
 	@go mod tidy

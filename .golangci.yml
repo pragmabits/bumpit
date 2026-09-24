@@ -1,0 +1,181 @@
+# Two sets of linters, answering two different questions.
+#
+#   revive, forbidigo,    is this written the way this project writes?
+#   varnamelen
+#   govet, errcheck,      is this wrong?
+#   staticcheck,
+#   ineffassign, unused
+#
+# They are kept together because the file has to be one file, not because the
+# questions are the same. The style set is the one that fails loudest on code
+# written before a rule existed; if the gate ever needs to be green before that
+# debt is paid, drop the rule from `enable` rather than loosening it.
+#
+# forbidigo does not inspect a *declaration*: it only ever sees usage
+# sites, which is an explicit choice by its maintainer as of v1.6.0
+# (changelog: "Don't check names in declarations"), not a bug. So a
+# forbidden abbreviation is caught where it is called and missed where it is
+# introduced: a struct field carrying one is reported at every read of it and
+# never at the line that declares it.
+#
+# Every exclusion below names the reason it exists. An exclusion without a
+# reason is indistinguishable from the rule never having been enabled.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - forbidigo
+    - revive
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+    - varnamelen
+
+  settings:
+    revive:
+      severity: error
+      rules:
+        - name: error-naming
+        - name: error-return
+        - name: errorf
+        - name: context-as-argument
+        - name: redefines-builtin-id
+        - name: datarace
+        - name: forbidden-call-in-wg-go
+        - name: identical-branches
+        - name: identical-ifelseif-branches
+        - name: identical-ifelseif-conditions
+        - name: identical-switch-conditions
+        - name: import-shadowing
+        - name: optimize-operands-order
+        - name: redundant-import-alias
+          severity: warning
+        - name: function-length
+          # A table-driven test grows past 50 lines in its table, not in its
+          # logic, and splitting one to fit the rule hides what the cases
+          # cover. Same reasoning the cyclomatic rule below already applies.
+          exclude:
+            - TEST
+          arguments:
+            - 0
+            - 50
+        - name: receiver-naming
+          # max-length is the only knob this rule exposes -- it has no
+          # case-sensitivity option, so "a receiver carries no uppercase
+          # letter" is not expressible here and is not checked anywhere.
+          arguments:
+            - max-length: 1
+        - name: cyclomatic
+          exclude:
+            - TEST
+          arguments:
+            - 10
+        - name: max-control-nesting
+          exclude:
+            - TEST
+          arguments:
+            - 3
+        - name: defer
+          arguments:
+            - - loop
+              - recover
+              - immediate-recover
+        - name: early-return
+          arguments:
+            - preserve-scope
+            - allow-jump
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: "(?i)^mu$"
+          msg: "mu is forbidden in identifiers"
+        - pattern: "(?i)^cfgs?$"
+          msg: "cfg and cfgs are forbidden in identifiers"
+        - pattern: "(?i)^sess$"
+          msg: "sess is forbidden in identifiers"
+        - pattern: "(?i)^args?$"
+          msg: "args and arg are forbidden in identifiers"
+        - pattern: "(?i)^props?$"
+          msg: "props and prop are forbidden in identifiers"
+        - pattern: "(?i)^repos?$"
+          msg: "repos and repo are forbidden in identifiers"
+        - pattern: "(?i)^creds?$"
+          msg: "creds and cred are forbidden in identifiers"
+        - pattern: "(?i)^svcs?$"
+          msg: "svc and svcs are forbidden in identifiers"
+        - pattern: "(?i)^cols?$"
+          msg: "col and cols are forbidden in identifiers"
+        - pattern: "(?i)^encs?$"
+          msg: "enc and encs are forbidden in identifiers"
+        - pattern: "(?i)^decs?$"
+          msg: "dec and decs are forbidden in identifiers"
+        - pattern: "(?i)^dbs?$"
+          msg: "db and dbs are forbidden in identifiers"
+        - pattern: "(?i)^fs$"
+          msg: "fs is forbidden in identifiers"
+        - pattern: "(?i)^toks?$"
+          msg: "tok and toks are forbidden in identifiers"
+        - pattern: "(?i)^sas?$"
+          msg: "sa and sas are forbidden in identifiers"
+        - pattern: "(?i)^params?$"
+          msg: "param and params are forbidden in identifiers"
+
+    varnamelen:
+      min-name-length: 2
+      max-distance: 0
+      check-receiver: false
+      check-return: false
+      check-type-param: false
+
+  exclusions:
+    generated: lax
+    # Naming these explicitly is required: defining this block at all turns OFF
+    # the defaults golangci-lint would otherwise apply, and the findings that
+    # come back are the noise those presets exist to remove.
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # A deferred call is the last thing a function does, and there is
+      # nowhere left to return its error to. Naming each function that may
+      # appear there is a list that grows forever and is wrong the moment
+      # somebody forgets to add to it, so the exclusion is by the shape of
+      # the line: errcheck still reports the same call written without
+      # `defer`.
+      #
+      # Blind spot this accepts: a deferred Close on a WRITE path can lose
+      # buffered data, and that error is worth handling. It has to be
+      # noticed by a reader, because the linter no longer will.
+      - linters:
+          - errcheck
+        source: "^\\s*defer "
+
+issues:
+  # Report everything. The defaults cap output at 50 per linter and 3 per
+  # repeated message, which turns "the gate is green" into "the gate got tired"
+  # and understates the real count by an order of magnitude.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Third cap, same family, and the one that hid the most: the default keeps a
+  # single issue per line. `cyclomatic` and `function-length` both report at the
+  # function's declaration line, so a function that is too complex AND too long
+  # surfaced as one finding, and which of the two won could vary between runs,
+  # so a fix in an unrelated file could move findings from one rule to the
+  # other. With it off, every finding is counted.
+  uniq-by-line: false
+
+# One line per finding. Without this, revive's function-length rule prints the
+# entire body of every function it flags — a 300-line function becomes 300 lines
+# of output, and the log stops being navigable. The finding already carries
+# file:line:column; whoever wants the context opens the file.
+output:
+  formats:
+    text:
+      path: stdout
+      print-issued-lines: false
