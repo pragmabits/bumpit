@@ -4,6 +4,8 @@ go 1.26.2
 
 require github.com/spf13/cobra v1.10.2
 
+require golang.org/x/mod v0.41.0
+
 require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
