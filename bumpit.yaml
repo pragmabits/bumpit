@@ -1,5 +1,5 @@
 repository: .
-tagMatch: "v*"
+tagMatch: ""
 startVersion: ""
 allowDirty: false
 output: text
