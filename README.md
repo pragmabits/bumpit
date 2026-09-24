@@ -10,6 +10,14 @@ Most auto-versioning tools are wired into CI/CD. `bumpit` keeps the decision loc
 - see why the version changes
 - create the tag locally without pushing automatically
 
+## Install
+
+```bash
+go install github.com/pragmabits/bumpit@latest
+```
+
+Up to `v0.3.0` the command lived in `cmd/bumpit`, so those versions install with `go install github.com/pragmabits/bumpit/cmd/bumpit@v0.3.0`.
+
 ## Commands
 
 ```bash
@@ -18,7 +26,7 @@ bumpit next
 bumpit explain
 bumpit tag
 bumpit modules
-bumpit version
+bumpit version     # or bumpit --version
 bumpit help
 bumpit next --help
 ```
@@ -75,6 +83,7 @@ Every flag has a short form, and a letter always means the same thing across com
 | `-P` | `--promote` | `next`, `explain`, `tag` | promote the current prerelease to a final release |
 | `-V` | `--release-as` | `next`, `explain`, `tag` | release this exact version, the only way to reach `1.0.0` |
 | `-m` | `--message` | `tag` | annotated tag message |
+| `-v` | `--version` | `bumpit` itself | print the version, as `bumpit version` does |
 
 `-t` carries the tag pattern instead of `-m` so that `-m` can keep its usual meaning from `git tag -m` and `git commit -m`. `-p` and `-P` are the mutually exclusive prerelease pair, and `-V` excludes both. `-g` sets the tag pattern from the module, so it excludes `-t`. `-h` is reserved by the CLI for help.
 
@@ -221,8 +230,12 @@ promote: false
 - `explain` reports the base release, the last final release whose commits it reads, and the tags it ignored, and in a Go module the module and its dependents
 - the JSON payload of `next` and `explain` carries `base_tag`, `ignored_tags`, `module` and `dependents` beside the fields above
 
-To embed a build version:
+## Version
+
+`bumpit version` and `bumpit --version` report the version set at link time, when the build sets one, as `make build` and `make install` do with `git describe`:
 
 ```bash
-go build -ldflags "-X github.com/pragmabits/bumpit/internal/app.buildVersion=v1.2.3" ./cmd/bumpit
+go build -ldflags "-X github.com/pragmabits/bumpit/internal/app.buildVersion=v1.2.3" .
 ```
+
+Without it they report the version the go command records in every binary: the version asked of `go install github.com/pragmabits/bumpit@<version>`, and for a build from a clone the version git gives, such as `v0.3.0` at a clean tagged commit or `v0.3.0+dirty` with uncommitted changes. A build that records neither reports `dev`, which is also what every release up to `v0.3.0` reports.
