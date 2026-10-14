@@ -84,9 +84,10 @@ Every flag has a short form, and a letter always means the same thing across com
 | `-P` | `--promote` | `next`, `explain`, `tag` | promote the current prerelease to a final release |
 | `-V` | `--release-as` | `next`, `explain`, `tag` | release this exact version, the only way to reach `1.0.0` |
 | `-m` | `--message` | `tag` | annotated tag message |
+| `-M` | `--all-modules` | `tag` | tag every Go module that has a release, holding the ones that require an older version of another module |
 | `-v` | `--version` | `bumpit` itself | print the version, as `bumpit version` does |
 
-`-t` carries the tag pattern instead of `-m` so that `-m` can keep its usual meaning from `git tag -m` and `git commit -m`. `-p` and `-P` are the mutually exclusive prerelease pair, and `-V` excludes both. `-g` sets the tag pattern from the module, so it excludes `-t`. `-h` is reserved by the CLI for help.
+`-t` carries the tag pattern instead of `-m` so that `-m` can keep its usual meaning from `git tag -m` and `git commit -m`. `-p` and `-P` are the mutually exclusive prerelease pair, and `-V` excludes both. `-g` sets the tag pattern from the module, so it excludes `-t`. `-M` tags every module at its own next version, so it excludes `-g`, `-t`, `-V`, `-p` and `-P`. `-a` is not used for it because `latest -a` already means every tag, and `git tag -a` means an annotated tag. `-h` is reserved by the CLI for help.
 
 Short flags can be bundled. A flag that takes a value must come last in the bundle, because it consumes the rest of the group:
 
@@ -166,7 +167,7 @@ DIRECTORY  MODULE                           CURRENT          NEXT
 cmd/tool   example.com/repository/cmd/tool  cmd/tool/v0.1.0  no release
 ```
 
-With `--output json` each module carries `directory`, `path`, `current_tag`, `next_tag` and `has_release`, and `error` in place of the next tag when its plan failed, so one module that cannot be planned does not hide the others.
+With `--output json` each module carries `directory`, `path`, `current_tag`, `next_tag` and `has_release`, `hold` when its release is held, as `bumpit tag --all-modules` holds it, and `error` in place of the next tag when its plan failed, so one module that cannot be planned does not hide the others.
 
 `bumpit explain` shows the module and who still requires the old version:
 
@@ -181,6 +182,19 @@ Dependents requiring an older version:
 - cmd/tool (example.com/repository/cmd/tool) requires v0.1.0
 ```
 
+`bumpit tag --all-modules` tags every module that has a release in one run, each at its own next version:
+
+```text
+.         created tag v0.2.0
+api       no release
+cmd/tool  held: requires example.com/repository v0.1.0, below v0.2.0; update cmd/tool/go.mod, commit and rerun
+```
+
+- **Planned first.** Every module is planned before any tag is created. When a plan fails, no tag is created and every failure is listed.
+- **Held releases.** A module that requires another module of the repository below its newest version, the next one when it is released in the same run and its current tag otherwise, is held: tagged now, its release would require the older version while its code may need the newer one. That is the order dependents call for: release the module, then update and release its dependents. Rerunning after the `go.mod` update tags it, and rerunning without one holds it again. A module that waits on another held module says so, and modules whose requirements form a cycle are released one at a time with `--module`, which holds nothing. A placeholder requirement beside a `replace` directive is held as well, since the go command cannot find it once the replace is ignored.
+- **Exit code.** The command fails when it creates no tag, as `bumpit tag` does.
+- **Flags.** `--module`, `--match`, `--release-as`, `--pre` and `--promote` pick one module or one version, so they cannot be combined with it, whether given on the command line or set in `bumpit.yaml`. `--start-version` applies to every module without tags and must be the bare version, such as `0.5.0`, since each module has its own prefix. `--message` and `tagMessage` go on every tag; without them each tag gets `Release <tag>`.
+
 ## Examples
 
 ```bash
@@ -193,6 +207,7 @@ bumpit next --promote                     # bumpit next -P
 bumpit next --release-as 1.0.0            # bumpit next -V 1.0.0
 bumpit next --module cmd/tool             # bumpit next -g cmd/tool
 bumpit modules --output json              # bumpit modules -o json
+bumpit tag --all-modules                  # bumpit tag -M
 ```
 
 ## Configuration
@@ -224,6 +239,7 @@ promote: false
 - the latest tag is always resolved by SemVer precedence, never by tag name or creation date
 - merge commits are ignored
 - the tool creates annotated local tags only
+- `bumpit tag --all-modules` tags every Go module that has a release, holds the ones that require an older version of another module of the repository, and creates no tag when a module cannot be planned
 - the tool never pushes tags automatically
 - the CLI is built with Cobra
 - `bumpit next` returns exit code `0` and prints `no release` when no releasable commits exist, and `bumpit tag` then fails with `no releasable commits found; refusing to create a tag`
