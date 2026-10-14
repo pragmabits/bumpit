@@ -28,7 +28,32 @@ type ModuleRelease struct {
 	CurrentTag string `json:"current_tag,omitempty"`
 	NextTag    string `json:"next_tag,omitempty"`
 	HasRelease bool   `json:"has_release"`
-	Error      string `json:"error,omitempty"`
+	// Hold is why the release waits, nil when it does not.
+	Hold  *Hold  `json:"hold,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// Hold is why the release of a module waits: it requires modules of the
+// repository below their newest version, and released now it would require
+// the older ones.
+type Hold struct {
+	Requirements []OutdatedRequirement `json:"requirements"`
+	// Cycle reports that the module waits, through held modules, on itself,
+	// so no rerun releases it.
+	Cycle bool `json:"cycle,omitempty"`
+}
+
+// OutdatedRequirement is a module of the repository that a module requires
+// below its newest version: the next one when it has a release, else its
+// current one.
+type OutdatedRequirement struct {
+	Directory string `json:"directory"`
+	Path      string `json:"path"`
+	Requires  string `json:"requires"`
+	Newest    string `json:"newest"`
+	// Held reports that the required module is held too, so its newest
+	// version is not tagged yet.
+	Held bool `json:"held,omitempty"`
 }
 
 // moduleScope is the Go module a plan versions: its tags start with the
@@ -39,9 +64,10 @@ type moduleScope struct {
 	modules []gomod.Module
 }
 
-// ListModules plans the next release of every Go module in the repository.
-// A module whose plan fails is listed with the error, so that one module does
-// not hide the others.
+// ListModules plans the next release of every Go module in the repository,
+// each with the start version of opts, and holds the releases that require
+// another module below its newest version. A module whose plan fails is
+// listed with the error, so that one module does not hide the others.
 func ListModules(opts Options) ([]ModuleRelease, error) {
 	client, err := openRepository(opts)
 	if err != nil {
@@ -53,8 +79,9 @@ func ListModules(opts Options) ([]ModuleRelease, error) {
 	}
 
 	releases := make([]ModuleRelease, 0, len(modules))
+	newest := map[string]semver.Version{}
 	for _, module := range modules {
-		moduleOptions := Options{Repository: top, AllowDirty: true, Module: module.Directory}
+		moduleOptions := Options{Repository: top, AllowDirty: true, StartVersion: opts.StartVersion, Module: module.Directory}
 		release := ModuleRelease{Directory: module.Directory, Path: module.Path}
 		plan, err := BuildReleasePlan(moduleOptions)
 		if err != nil {
@@ -62,8 +89,79 @@ func ListModules(opts Options) ([]ModuleRelease, error) {
 		}
 		release.CurrentTag, release.NextTag, release.HasRelease = plan.CurrentTag, plan.NextTag, plan.HasRelease
 		releases = append(releases, release)
+		if version, ok := plan.newestVersion(); ok {
+			newest[module.Path] = version
+		}
 	}
+	holdReleases(releases, modules, newest)
 	return releases, nil
+}
+
+// holdReleases holds the release of every module that requires a module of
+// the repository below its newest version. Tagged at the same commit, the
+// release would require the older version, while the code it was built
+// against may need the newer one. releases and modules share their order.
+func holdReleases(releases []ModuleRelease, modules []gomod.Module, newest map[string]semver.Version) {
+	holds := map[string]*Hold{}
+	for index, module := range modules {
+		if !releases[index].HasRelease {
+			continue
+		}
+		if outdated := outdatedRequirements(module, modules, newest); len(outdated) > 0 {
+			releases[index].Hold = &Hold{Requirements: outdated}
+			holds[module.Directory] = releases[index].Hold
+		}
+	}
+
+	for _, hold := range holds {
+		for index := range hold.Requirements {
+			_, hold.Requirements[index].Held = holds[hold.Requirements[index].Directory]
+		}
+	}
+	for directory, hold := range holds {
+		hold.Cycle = waitsOnItself(directory, holds)
+	}
+}
+
+// outdatedRequirements lists the modules of the repository that module
+// requires below their newest version.
+func outdatedRequirements(module gomod.Module, modules []gomod.Module, newest map[string]semver.Version) []OutdatedRequirement {
+	var outdated []OutdatedRequirement
+	for _, other := range modules {
+		required, requires := module.Requires[other.Path]
+		version, known := newest[other.Path]
+		if !requires || !known || !requiresBelow(required, version) {
+			continue
+		}
+		outdated = append(outdated, OutdatedRequirement{
+			Directory: other.Directory,
+			Path:      other.Path,
+			Requires:  required,
+			Newest:    "v" + version.String(),
+		})
+	}
+	return outdated
+}
+
+// waitsOnItself reports whether the module in start waits, through held
+// modules, on itself.
+func waitsOnItself(start string, holds map[string]*Hold) bool {
+	visited := map[string]bool{}
+	pending := []string{start}
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, requirement := range holds[current].Requirements {
+			if requirement.Directory == start && requirement.Held {
+				return true
+			}
+			if requirement.Held && !visited[requirement.Directory] {
+				visited[requirement.Directory] = true
+				pending = append(pending, requirement.Directory)
+			}
+		}
+	}
+	return false
 }
 
 // resolveModuleScope picks the module a plan versions: the directory given
@@ -208,15 +306,32 @@ func (m *moduleScope) dependentsBelow(next semver.Version) []Dependent {
 	var dependents []Dependent
 	for _, other := range m.modules {
 		required, ok := other.Requires[m.module.Path]
-		if !ok {
-			continue
-		}
-		version, err := semver.Parse(strings.TrimPrefix(required, "v"))
-		if err != nil || semver.Compare(version, next) < 0 {
+		if ok && requiresBelow(required, next) {
 			dependents = append(dependents, Dependent{Directory: other.Directory, Path: other.Path, Requires: required})
 		}
 	}
 	return dependents
+}
+
+// requiresBelow reports whether a version a go.mod requires is below version.
+// A requirement that is not a semantic version, such as the placeholder
+// v0.0.0-00010101000000-000000000000 beside a replace directive, counts as
+// below: the go command cannot find it once the replace is ignored.
+func requiresBelow(required string, version semver.Version) bool {
+	parsed, err := semver.Parse(strings.TrimPrefix(required, "v"))
+	return err != nil || semver.Compare(parsed, version) < 0
+}
+
+// newestVersion is the version of the module once the plan is released: the
+// next one when it has a release, else the current one. A module with neither
+// has none.
+func (r ReleasePlan) newestVersion() (semver.Version, bool) {
+	newest := r.CurrentVersion
+	if r.HasRelease {
+		newest = r.NextVersion
+	}
+	version, err := semver.Parse(newest)
+	return version, err == nil
 }
 
 func (m *moduleScope) modulePath() string {

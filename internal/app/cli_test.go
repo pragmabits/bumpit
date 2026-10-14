@@ -28,7 +28,7 @@ func TestCommandFlagShorthands(t *testing.T) {
 		"latest":  {"config": "c", "repo": "r", "match": "t", "output": "o", "all": "a", "no-prefix": "n", "module": "g"},
 		"next":    withShorthands(releaseShorthands, map[string]string{"output": "o"}),
 		"explain": withShorthands(releaseShorthands, map[string]string{"output": "o"}),
-		"tag":     withShorthands(releaseShorthands, map[string]string{"message": "m"}),
+		"tag":     withShorthands(releaseShorthands, map[string]string{"message": "m", "all-modules": "M"}),
 		"modules": {"config": "c", "repo": "r", "output": "o", "allow-dirty": "d"},
 	}
 

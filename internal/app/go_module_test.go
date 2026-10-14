@@ -1,8 +1,11 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -218,6 +221,129 @@ func TestListModulesPutsRootModuleFirst(t *testing.T) {
 	if strings.Join(directories, " ") != ". api cmd/tool" {
 		t.Fatalf("unexpected module order: %v", directories)
 	}
+}
+
+func TestListModulesHoldsReleases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) string
+		want  map[string]*Hold
+	}{
+		{
+			name: "required module released in the same run",
+			setup: func(t *testing.T) string {
+				repositoryPath := initGoRepository(t)
+				commitFile(t, repositoryPath, "library.txt", "library", "feat: add a helper")
+				commitFile(t, repositoryPath, "tool/main.txt", "main", "feat(tool): add a flag")
+				return repositoryPath
+			},
+			want: map[string]*Hold{"tool": {Requirements: []OutdatedRequirement{
+				{Directory: ".", Path: "example.com/repository", Requires: "v0.1.0", Newest: "v0.2.0"},
+			}}},
+		},
+		{
+			name: "required module released before",
+			setup: func(t *testing.T) string {
+				repositoryPath := initGoRepository(t)
+				commitFile(t, repositoryPath, "library.txt", "library", "feat: add a helper")
+				runGit(t, repositoryPath, "tag", "-a", "v0.2.0", "-m", "Release v0.2.0")
+				commitFile(t, repositoryPath, "tool/main.txt", "main", "feat(tool): add a flag")
+				return repositoryPath
+			},
+			want: map[string]*Hold{"tool": {Requirements: []OutdatedRequirement{
+				{Directory: ".", Path: "example.com/repository", Requires: "v0.1.0", Newest: "v0.2.0"},
+			}}},
+		},
+		{
+			name: "placeholder requirement beside a replace directive",
+			setup: func(t *testing.T) string {
+				repositoryPath := initRepository(t)
+				commitGoMod(t, repositoryPath, ".", "example.com/repository", "feat: initial library")
+				commitGoMod(t, repositoryPath, "tool", "example.com/repository/tool", "feat(tool): initial tool", "example.com/repository v0.0.0-00010101000000-000000000000")
+				runGit(t, repositoryPath, "tag", "-a", "v0.1.0", "-m", "Release v0.1.0")
+				commitFile(t, repositoryPath, "tool/main.txt", "main", "feat(tool): add a flag")
+				return repositoryPath
+			},
+			want: map[string]*Hold{"tool": {Requirements: []OutdatedRequirement{
+				{Directory: ".", Path: "example.com/repository", Requires: "v0.0.0-00010101000000-000000000000", Newest: "v0.1.0"},
+			}}},
+		},
+		{
+			name: "requirement on a held module",
+			setup: func(t *testing.T) string {
+				return initChainedModules(t, "example.com/b v0.1.0", "", "example.com/a v0.1.0")
+			},
+			want: map[string]*Hold{
+				"a": {Requirements: []OutdatedRequirement{{Directory: "b", Path: "example.com/b", Requires: "v0.1.0", Newest: "v0.2.0"}}},
+				"c": {Requirements: []OutdatedRequirement{{Directory: "a", Path: "example.com/a", Requires: "v0.1.0", Newest: "v0.2.0", Held: true}}},
+			},
+		},
+		{
+			name: "requirement cycle",
+			setup: func(t *testing.T) string {
+				return initChainedModules(t, "example.com/b v0.1.0", "example.com/a v0.1.0", "")
+			},
+			want: map[string]*Hold{
+				"a": {Requirements: []OutdatedRequirement{{Directory: "b", Path: "example.com/b", Requires: "v0.1.0", Newest: "v0.2.0", Held: true}}, Cycle: true},
+				"b": {Requirements: []OutdatedRequirement{{Directory: "a", Path: "example.com/a", Requires: "v0.1.0", Newest: "v0.2.0", Held: true}}, Cycle: true},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			releases, err := ListModules(Options{Repository: test.setup(t)})
+			if err != nil {
+				t.Fatalf("ListModules returned error: %v", err)
+			}
+
+			holds := map[string]*Hold{}
+			for _, release := range releases {
+				if release.Hold != nil {
+					holds[release.Directory] = release.Hold
+				}
+			}
+			if !reflect.DeepEqual(holds, test.want) {
+				t.Fatalf("unexpected holds:\n got %s\nwant %s", describeHolds(holds), describeHolds(test.want))
+			}
+		})
+	}
+}
+
+// initChainedModules creates a repository holding the modules example.com/a,
+// example.com/b and example.com/c in the directories a, b and c, each
+// requiring what is given for it, if anything, released at v0.1.0 and then
+// changed by a feat commit.
+func initChainedModules(t *testing.T, aRequires, bRequires, cRequires string) string {
+	t.Helper()
+
+	repositoryPath := initRepository(t)
+	for _, module := range []struct{ name, requires string }{{"a", aRequires}, {"b", bRequires}, {"c", cRequires}} {
+		var requires []string
+		if module.requires != "" {
+			requires = append(requires, module.requires)
+		}
+		commitGoMod(t, repositoryPath, module.name, "example.com/"+module.name, "feat: initial "+module.name, requires...)
+		runGit(t, repositoryPath, "tag", "-a", module.name+"/v0.1.0", "-m", "Release "+module.name+"/v0.1.0")
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		commitFile(t, repositoryPath, filepath.Join(name, "change.txt"), "change", "feat("+name+"): add a change")
+	}
+	return repositoryPath
+}
+
+// describeHolds prints holds by directory, in a stable order.
+func describeHolds(holds map[string]*Hold) string {
+	var described []string
+	for directory, hold := range holds {
+		described = append(described, fmt.Sprintf("%s: %+v", directory, *hold))
+	}
+	slices.Sort(described)
+	return strings.Join(described, ", ")
 }
 
 // initGoRepository creates a repository holding the root module

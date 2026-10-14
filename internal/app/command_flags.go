@@ -2,6 +2,8 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -43,6 +45,10 @@ func bindPromoteFlag(command *cobra.Command, target *bool) {
 
 func bindReleaseAsFlag(command *cobra.Command, target *string) {
 	command.Flags().StringVarP(target, "release-as", "V", "", "release this exact version, for example 1.0.0 to declare the public API stable")
+}
+
+func bindAllModulesFlag(command *cobra.Command, target *bool) {
+	command.Flags().BoolVarP(target, "all-modules", "M", false, "tag every Go module of the repository that has a release, holding the ones that require another module below its newest version")
 }
 
 func bindOutputFlag(command *cobra.Command, target *string) {
@@ -190,6 +196,7 @@ type tagCommandFlags struct {
 	promote      bool
 	releaseAs    string
 	module       string
+	allModules   bool
 }
 
 func (f tagCommandFlags) defaults() Config {
@@ -230,6 +237,7 @@ func (f *tagCommandFlags) bind(command *cobra.Command) {
 	bindPromoteFlag(command, &f.promote)
 	bindReleaseAsFlag(command, &f.releaseAs)
 	bindModuleFlag(command, &f.module)
+	bindAllModulesFlag(command, &f.allModules)
 	command.Flags().StringVarP(&f.message, "message", "m", "", "annotated tag message")
 }
 
@@ -251,6 +259,34 @@ func (f *tagCommandFlags) applyConfig(command *cobra.Command) (*Config, error) {
 	overrideBool(flags, "promote", &f.promote, config.Promote)
 
 	return config, nil
+}
+
+// checkAllModules refuses the flags that pick one module or one version,
+// which --all-modules cannot apply to every module, and names the config key
+// when the value comes from the config file.
+func (f tagCommandFlags) checkAllModules(commandFlags *pflag.FlagSet) error {
+	conflicts := []struct {
+		flag      string
+		configKey string
+		set       bool
+	}{
+		{flag: "module", set: f.module != ""},
+		{flag: "match", configKey: "tagMatch", set: f.tagMatch != ""},
+		{flag: "release-as", set: strings.TrimSpace(f.releaseAs) != ""},
+		{flag: "pre", configKey: "preRelease", set: strings.TrimSpace(f.preRelease) != ""},
+		{flag: "promote", configKey: "promote", set: f.promote},
+	}
+
+	for _, conflict := range conflicts {
+		if !conflict.set {
+			continue
+		}
+		if commandFlags.Changed(conflict.flag) || conflict.configKey == "" {
+			return fmt.Errorf("--all-modules cannot be used with --%s", conflict.flag)
+		}
+		return fmt.Errorf("--all-modules cannot be used with --%s, which %s sets in the config file", conflict.flag, conflict.configKey)
+	}
+	return nil
 }
 
 type modulesCommandFlags struct {

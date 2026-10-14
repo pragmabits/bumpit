@@ -396,6 +396,146 @@ func TestCLIEndToEndLatestWithoutTags(t *testing.T) {
 	}
 }
 
+func TestCLIEndToEndTagAllModules(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initGoRepository(t)
+	commitGoMod(t, repositoryPath, "api", "example.com/repository/api", "feat(api): initial API")
+	runGit(t, repositoryPath, "tag", "-a", "api/v0.1.0", "-m", "Release api/v0.1.0")
+	commitFile(t, repositoryPath, "library.txt", "library", "feat: add a helper")
+	commitFile(t, repositoryPath, "tool/main.txt", "main", "feat(tool): add a flag")
+
+	binaryPath := buildCLI(t)
+	held := "held: requires example.com/repository v0.1.0, below v0.2.0"
+
+	modulesOutput, err := runCLI(binaryPath, "modules", "-r", repositoryPath)
+	if err != nil {
+		t.Fatalf("modules returned error: %v\noutput: %s", err, modulesOutput)
+	}
+	if !strings.Contains(modulesOutput, "tool/v0.2.0, "+held) {
+		t.Fatalf("modules does not show the held release:\n%s", modulesOutput)
+	}
+
+	steps := []struct {
+		arguments []string
+		succeeds  bool
+		rows      []string
+	}{
+		{[]string{"tag", "--all-modules", "-r", repositoryPath}, true, []string{".     created tag v0.2.0", "api   no release", "tool  " + held + "; update tool/go.mod, commit and rerun"}},
+		{[]string{"tag", "-M", "-r", repositoryPath}, false, []string{".     no release", "tool  " + held, "no module can be tagged"}},
+	}
+	for _, step := range steps {
+		output, err := runCLI(binaryPath, step.arguments...)
+		if (err == nil) != step.succeeds {
+			t.Fatalf("%v returned error %v, want success %t\noutput: %s", step.arguments, err, step.succeeds, output)
+		}
+		for _, row := range step.rows {
+			if !strings.Contains(output, row) {
+				t.Errorf("%v output lacks %q:\n%s", step.arguments, row, output)
+			}
+		}
+	}
+
+	commitGoMod(t, repositoryPath, "tool", "example.com/repository/tool", "chore(tool): require v0.2.0", "example.com/repository v0.2.0")
+	output, err := runCLI(binaryPath, "tag", "-M", "-r", repositoryPath)
+	if err != nil || !strings.Contains(output, "tool  created tag tool/v0.2.0") {
+		t.Fatalf("tag -M after the go.mod update returned %v:\n%s", err, output)
+	}
+
+	annotationOutput, err := runGitOutput(repositoryPath, "tag", "-n99", "--list", "tool/v0.2.0")
+	if err != nil || !strings.Contains(annotationOutput, "Release tool/v0.2.0") {
+		t.Fatalf("unexpected tag annotation %q: %v", annotationOutput, err)
+	}
+}
+
+func TestCLIEndToEndTagAllModulesCreatesNoTag(t *testing.T) {
+	t.Parallel()
+
+	binaryPath := buildCLI(t)
+
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T) string
+		arguments []string
+		message   string
+	}{
+		{name: "module plan fails", setup: initFailingModule, message: "planning failed for these modules:\ntool: module example.com/repository/tool/v2 cannot release v0.2.0"},
+		{name: "module flag", setup: initReleasableGoRepository, arguments: []string{"-g", "tool"}, message: "--all-modules cannot be used with --module"},
+		{name: "match flag", setup: initReleasableGoRepository, arguments: []string{"-t", "v*"}, message: "--all-modules cannot be used with --match"},
+		{name: "release-as flag", setup: initReleasableGoRepository, arguments: []string{"-V", "1.0.0"}, message: "--all-modules cannot be used with --release-as"},
+		{name: "pre flag", setup: initReleasableGoRepository, arguments: []string{"-p", "beta"}, message: "--all-modules cannot be used with --pre"},
+		{name: "promote flag", setup: initReleasableGoRepository, arguments: []string{"-P"}, message: "--all-modules cannot be used with --promote"},
+		{name: "prerelease from config", setup: initPreReleaseConfig, message: "--all-modules cannot be used with --pre, which preRelease sets in the config file"},
+		{name: "no Go module", setup: initReleasableRepository, message: "no Go module found"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			repositoryPath := test.setup(t)
+			tagsBefore, err := runGitOutput(repositoryPath, "tag", "--list")
+			if err != nil {
+				t.Fatalf("git tag --list returned error: %v", err)
+			}
+
+			arguments := append([]string{"tag", "-M", "-r", repositoryPath}, test.arguments...)
+			output, err := runCLI(binaryPath, arguments...)
+			if err == nil || !strings.Contains(output, test.message) {
+				t.Fatalf("%v returned %v, want an error with %q:\n%s", arguments, err, test.message, output)
+			}
+
+			tagsAfter, err := runGitOutput(repositoryPath, "tag", "--list")
+			if err != nil || tagsAfter != tagsBefore {
+				t.Fatalf("tags changed from %q to %q: %v", tagsBefore, tagsAfter, err)
+			}
+		})
+	}
+}
+
+// initReleasableGoRepository is initGoRepository with a release pending for
+// both modules.
+func initReleasableGoRepository(t *testing.T) string {
+	t.Helper()
+
+	repositoryPath := initGoRepository(t)
+	commitFile(t, repositoryPath, "library.txt", "library", "feat: add a helper")
+	commitFile(t, repositoryPath, "tool/main.txt", "main", "feat(tool): add a flag")
+	return repositoryPath
+}
+
+// initFailingModule is initGoRepository with a release pending for the root
+// module, and the tool moved to a /v2 module path by a commit that marks no
+// breaking change, which its plan refuses.
+func initFailingModule(t *testing.T) string {
+	t.Helper()
+
+	repositoryPath := initGoRepository(t)
+	commitFile(t, repositoryPath, "library.txt", "library", "feat: add a helper")
+	commitGoMod(t, repositoryPath, "tool", "example.com/repository/tool/v2", "feat(tool): move to the v2 path")
+	return repositoryPath
+}
+
+// initPreReleaseConfig is initReleasableGoRepository with a bumpit.yaml that
+// sets a prerelease label.
+func initPreReleaseConfig(t *testing.T) string {
+	t.Helper()
+
+	repositoryPath := initReleasableGoRepository(t)
+	commitFile(t, repositoryPath, "bumpit.yaml", "preRelease: beta\n", "chore: configure bumpit")
+	return repositoryPath
+}
+
+// initReleasableRepository creates a repository without a go.mod and with a
+// release pending.
+func initReleasableRepository(t *testing.T) string {
+	t.Helper()
+
+	repositoryPath := initRepository(t)
+	commitFile(t, repositoryPath, "feature.txt", "feature", "feat: initial release")
+	return repositoryPath
+}
+
 // buildCLI builds bumpit into a temporary directory, passing buildFlags to go
 // build, and returns the binary's path.
 func buildCLI(t *testing.T, buildFlags ...string) string {

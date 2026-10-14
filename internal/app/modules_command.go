@@ -15,7 +15,7 @@ func newModulesCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "modules",
 		Short: "List the Go modules of the repository and their next versions",
-		Long:  "bumpit modules finds every tracked go.mod, leaving out vendor, testdata and directories starting with . or _, and plans the next release of each module from its own tags and the commits under its directory.",
+		Long:  "bumpit modules finds every tracked go.mod, leaving out vendor, testdata and directories starting with . or _, and plans the next release of each module from its own tags and the commits under its directory. A release that requires another module of the repository below its newest version is held, as bumpit tag --all-modules holds it.",
 		RunE: func(command *cobra.Command, args []string) error {
 			outputWriter := command.OutOrStdout()
 
@@ -68,9 +68,21 @@ func nextColumn(release ModuleRelease) string {
 	switch {
 	case release.Error != "":
 		return "error: " + release.Error
+	case release.Hold != nil:
+		return release.NextTag + ", held: " + holdReason(release.Hold)
 	case release.HasRelease:
 		return release.NextTag
 	default:
 		return "no release"
 	}
+}
+
+// holdReason says which modules a held release requires below their newest
+// version.
+func holdReason(hold *Hold) string {
+	reasons := make([]string, 0, len(hold.Requirements))
+	for _, requirement := range hold.Requirements {
+		reasons = append(reasons, fmt.Sprintf("requires %s %s, below %s", requirement.Path, requirement.Requires, requirement.Newest))
+	}
+	return strings.Join(reasons, "; ")
 }
