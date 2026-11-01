@@ -6,6 +6,8 @@ package nodejs
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -67,7 +69,8 @@ type manifest struct {
 // repository at top, slash separated and relative to it. The files under a
 // node_modules directory are left out, as every manager leaves them out. A
 // package.json that cannot be read is no package; the derivations that must
-// read it report why.
+// read it report why. A tracked package.json deleted from the working tree is
+// no package either, as a deleted Go file embeds nothing.
 func Read(top string, tracked []string) Repository {
 	repository := Repository{
 		top:         top,
@@ -91,6 +94,9 @@ func Read(top string, tracked []string) Repository {
 
 func (r *Repository) readPackage(file string) {
 	read, err := readManifest(filepath.Join(r.top, filepath.FromSlash(file)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
 	if err != nil {
 		r.unreadable[file] = err
 		return

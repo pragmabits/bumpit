@@ -28,27 +28,27 @@ type pnpmWorkspace struct {
 	Overrides map[string]string `yaml:"overrides"`
 }
 
-// Inputs lists what the package in directory is built from outside its own
-// directory, among the tracked files of the repository, sorted:
-//   - its local dependencies, transitively, among its dependencies,
-//     devDependencies, optionalDependencies and peerDependencies, and among
-//     the overrides of the workspace roots above it;
-//   - the files an install reads in each workspace root above it: every
-//     ancestor with a pnpm-workspace.yaml, or with a package.json that has
-//     workspaces, not only the nearest, since yarn nests workspaces;
-//   - every .yarnrc.yml above it, which yarn reads in parent directories.
+// Inputs lists what the packages in directory are built from outside it,
+// among the tracked files of the repository, sorted:
+//   - their local dependencies, transitively: those of every package.json in
+//     directory, in its dependencies, devDependencies, optionalDependencies
+//     and peerDependencies, and those the overrides of directory and of the
+//     workspace roots above it point at;
+//   - the files an install reads in each workspace root above directory:
+//     every ancestor with a pnpm-workspace.yaml, or with a package.json that
+//     has workspaces, not only the nearest, since yarn nests workspaces;
+//   - every .yarnrc.yml above directory, which yarn reads in parent
+//     directories.
 //
-// A dependency on the package itself or on an ancestor of it is left out: it
-// would read the whole workspace, whose root files are read already. A
-// directory with no package.json has no input. Inputs fails on a package.json
-// or a pnpm-workspace.yaml it must read and cannot: its own, that of a root
-// above it, or that of a package a path points at.
+// A dependency on directory or on an ancestor of it is left out: it would
+// read the whole workspace, whose root files are read already. A directory
+// that holds no package.json has no input. Inputs fails on a package.json or
+// a pnpm-workspace.yaml it must read and cannot: one in directory, that of a
+// root above it, or that of a package a path points at.
 func (r Repository) Inputs(directory string) ([]string, error) {
-	if _, readable := r.packages[directory]; !readable {
-		if err, unreadable := r.unreadable[manifestOf(directory)]; unreadable {
-			return nil, fmt.Errorf("read %s: %w", manifestOf(directory), err)
-		}
-		return nil, nil
+	own, err := r.packagesWithin(directory)
+	if err != nil || len(own) == 0 {
+		return nil, err
 	}
 
 	roots, overrides, err := r.roots(directory)
@@ -66,40 +66,86 @@ func (r Repository) Inputs(directory string) ([]string, error) {
 			inputs[yarnrc] = true
 		}
 	}
-	if err := r.followDependencies(directory, overrides, inputs); err != nil {
+
+	pending := overrides
+	for _, found := range own {
+		pending = append(pending, r.dependenciesOf(found)...)
+	}
+	if err := r.followDependencies(directory, pending, inputs); err != nil {
 		return nil, err
 	}
 	return sortedKeys(inputs), nil
 }
 
+// packagesWithin lists the directories of the packages in directory, its own
+// included, and fails on a package.json there that cannot be read.
+func (r Repository) packagesWithin(directory string) ([]string, error) {
+	for file, err := range r.unreadable {
+		if within(path.Dir(file), directory) {
+			return nil, fmt.Errorf("read %s: %w", file, err)
+		}
+	}
+	var own []string
+	for found := range r.packages {
+		if within(found, directory) {
+			own = append(own, found)
+		}
+	}
+	slices.Sort(own)
+	return own, nil
+}
+
 // roots lists the workspace roots above directory, nearest first, and the
-// overrides they set, each with the root it is read from.
+// overrides they and directory itself set, when it is a root too, each with
+// the directory its paths are read from.
 func (r Repository) roots(directory string) ([]string, []sourcedDependency, error) {
+	_, overrides, err := r.rootAt(directory)
+	if err != nil {
+		return nil, nil, err
+	}
 	var roots []string
-	var overrides []sourcedDependency
 	for _, ancestor := range ancestors(directory) {
 		if err, unreadable := r.unreadable[manifestOf(ancestor)]; unreadable {
 			return nil, nil, fmt.Errorf("read %s: %w", manifestOf(ancestor), err)
 		}
-		workspaceFile := path.Join(ancestor, "pnpm-workspace.yaml")
-		found, readable := r.packages[ancestor]
-		hasWorkspaceFile := r.files[workspaceFile]
-		if isRoot := hasWorkspaceFile || readable && found.Workspaces; !isRoot {
-			continue
-		}
-
-		roots = append(roots, ancestor)
-		overrides = append(overrides, sourcedOverrides(found.Overrides, ancestor)...)
-		if !hasWorkspaceFile {
-			continue
-		}
-		pnpmOverrides, err := r.readPnpmOverrides(workspaceFile)
+		isRoot, rootOverrides, err := r.rootAt(ancestor)
 		if err != nil {
 			return nil, nil, err
 		}
-		overrides = append(overrides, sourcedOverrides(pnpmOverrides, ancestor)...)
+		if isRoot {
+			roots = append(roots, ancestor)
+			overrides = append(overrides, rootOverrides...)
+		}
 	}
 	return roots, overrides, nil
+}
+
+// rootAt reports whether directory is a workspace root, and the overrides it
+// sets: those of its package.json, and those of its pnpm-workspace.yaml,
+// each named after the package it overrides.
+func (r Repository) rootAt(directory string) (bool, []sourcedDependency, error) {
+	workspaceFile := path.Join(directory, "pnpm-workspace.yaml")
+	found, readable := r.packages[directory]
+	hasWorkspaceFile := r.files[workspaceFile]
+	if isRoot := hasWorkspaceFile || readable && found.Workspaces; !isRoot {
+		return false, nil, nil
+	}
+
+	overrides := found.Overrides
+	if hasWorkspaceFile {
+		pnpmOverrides, err := r.readPnpmOverrides(workspaceFile)
+		if err != nil {
+			return false, nil, err
+		}
+		overrides = append(slices.Clone(overrides), pnpmOverrides...)
+	}
+
+	sourced := make([]sourcedDependency, 0, len(overrides))
+	for _, override := range overrides {
+		named := Dependency{Name: overrideName(override.Name), Specification: override.Specification}
+		sourced = append(sourced, sourcedDependency{Dependency: named, from: directory})
+	}
+	return true, sourced, nil
 }
 
 // sourcedDependency is a dependency and the directory its path is read from.
@@ -144,17 +190,9 @@ func (r Repository) filesOfRoot(root string) []string {
 	return found
 }
 
-// followDependencies adds to inputs the packages the package in directory
-// depends on, and those they depend on in turn, with what the overrides of
-// its roots point at, which applies to every package they install.
-func (r Repository) followDependencies(directory string, overrides []sourcedDependency, inputs map[string]bool) error {
-	pending := slices.Clone(overrides)
-	for index := range pending {
-		pending[index].Name = overrideName(pending[index].Name)
-	}
-	pending = append(pending, r.dependenciesOf(directory)...)
-
-	visited := map[string]bool{directory: true}
+// followDependencies adds to inputs where pending points, and where the
+// packages it reaches depend in turn.
+func (r Repository) followDependencies(directory string, pending []sourcedDependency, inputs map[string]bool) error {
 	for len(pending) > 0 {
 		dependency := pending[0]
 		pending = pending[1:]
@@ -167,10 +205,7 @@ func (r Repository) followDependencies(directory string, overrides []sourcedDepe
 			if err := r.checkReadable(found, pointed.byPath); err != nil {
 				return err
 			}
-			if !visited[found] {
-				visited[found] = true
-				pending = append(pending, r.dependenciesOf(found)...)
-			}
+			pending = append(pending, r.dependenciesOf(found)...)
 		}
 	}
 	return nil

@@ -119,6 +119,19 @@ func TestInputs(t *testing.T) {
 			directory: "docs",
 		},
 		{
+			name: "the module that is a workspace root, with its overrides and its members",
+			files: map[string]string{
+				"web/package.json":         `{"name": "web", "pnpm": {"overrides": {"ui-kit": "link:../libs/ui-kit"}}}`,
+				"web/pnpm-workspace.yaml":  "packages: [app]\noverrides:\n  theme: link:../libs/theme\n",
+				"web/app/package.json":     `{"name": "app", "dependencies": {"shared": "^1.0.0"}}`,
+				"libs/ui-kit/package.json": `{"name": "ui-kit"}`,
+				"libs/theme/package.json":  `{"name": "theme"}`,
+				"libs/shared/package.json": `{"name": "shared"}`,
+			},
+			directory: "web",
+			want:      []string{"libs/shared", "libs/theme", "libs/ui-kit"},
+		},
+		{
 			name: "an unrelated package.json that cannot be read",
 			files: map[string]string{
 				"package.json":           `{"workspaces": ["site"]}`,
@@ -183,6 +196,23 @@ func TestInputsRefusesWhatItMustRead(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), testCase.message) {
 			t.Errorf("%s: Inputs error = %v, want one starting with %q", testCase.name, err, testCase.message)
 		}
+	}
+}
+
+// TestInputsTreatsDeletedPackageAsAbsent covers a tracked package.json
+// deleted from the working tree, above the module: it is no package, as a
+// deleted Go file embeds nothing, and its path is still read.
+func TestInputsTreatsDeletedPackageAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	top, tracked := writeTree(t, map[string]string{
+		"web/pnpm-workspace.yaml":   "packages: [homepage]\n",
+		"web/homepage/package.json": `{"name": "homepage"}`,
+	})
+	tracked = append(tracked, "web/package.json")
+	got, err := Read(top, tracked).Inputs("web/homepage")
+	if err != nil || !slices.Equal(got, []string{"web/package.json", "web/pnpm-workspace.yaml"}) {
+		t.Fatalf("Inputs = %q, %v; want the root files and no error", got, err)
 	}
 }
 
