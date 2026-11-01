@@ -204,14 +204,13 @@ modules:
   - directory: web/homepage      # relative to the top of the repository
     tagPrefix: homepage/v        # default: web/homepage/v, or v for .
     paths:                       # what it is built from outside its directory
-      - web/brand
-      - web/pnpm-lock.yaml
       - deploy/homepage
     shippedBy: []                # required: the modules whose release also carries it
 ```
 
 - **Tags.** Every tag of the module starts with `tagPrefix`, its `v` included: `homepage/v0.1.0`. Without one, the prefix is the directory followed by `/v`, as for a Go module in that directory.
 - **Commits.** A file belongs to the deepest module whose directory holds it, Go or declared, and a module reads the commits that touch its own files. The root module therefore no longer reads `web/homepage`, as it does not read a nested Go module. A declared module also reads the commits of each of its `paths`, whoever owns them: a `fix:` in `web/brand` releases the root module, which owns it, and the homepage, which is built from it. A path may name a module nested in the directory, which is then read too. The `.go` files of a Go module that lie in a declared directory stay the Go module's code: their commits are its own, at their own level, whatever `shippedBy` says.
+- **Node packages.** A declared module whose directory holds a `package.json` also reads, without listing them, what its install reads outside its directory. The packages it depends on are read, and those they depend on in turn: by path, written bare or after `workspace:`, `file:`, `link:` or `portal:`, and by name otherwise, the name being that of the dependency or of the alias after `workspace:` or `npm:`. A name is looked up among every `package.json` of the repository, so a package outside the workspace that bears it is read too, and a dependency on the module or on one of its ancestors is left out. So are the overrides of npm, pnpm and yarn that point at a package of the repository. The files of every workspace root above it are read as well, the roots being the directories with a `pnpm-workspace.yaml` or a `package.json` that has `workspaces`: their `package.json`, `pnpm-workspace.yaml`, lockfiles, `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnpmfile.cjs`, `.pnpmfile.mjs`, `bunfig.toml`, `.yarn` and `patches`, and every `.yarnrc.yml` above. This works the same for pnpm, npm, yarn and bun. bumpit never sets the version a `package.json` carries, and does not see the files a build script reads on its own. A `package.json` the module, a root above it or a path it follows needs that cannot be read stops the plans that read the module.
 - **Shipped modules.** A module that `shippedBy` names carries the declared module in its release, so it reads every commit the declared module reads, and those of the modules that one carries in turn. A breaking change that reaches it only that way is a minor change for it: the contract it breaks is the carried module's, and a breaking change of the carrier is marked in a commit of its own. A cycle, a module that through its carriers carries itself, is refused.
 - **No major version check, no holds.** Nothing reads a declared module by a module path, so it takes any version, and no `go.mod` requires it.
 
@@ -229,13 +228,14 @@ bumpit also refuses a declaration whose directory holds a `go.mod`, which makes 
 
 ```text
 Module: web/homepage (declared in bumpit.yaml)
-Paths: web/brand, web/pnpm-lock.yaml, deploy/homepage
+Paths: deploy/homepage
+Paths from the Node packages: web/brand, web/package.json, web/pnpm-lock.yaml, web/pnpm-workspace.yaml
 Current tag: homepage/v0.1.0
 ...
 - 3f2a1c9 fix: sharpen the logo [patch: fix commit] via web/brand
 ```
 
-The module around it says `Leaves out: web/homepage`, or `Ships: web/homepage` when `shippedBy` names it. In JSON, `bumpit modules` marks a declared module with `declared`, and `next` and `explain` carry `directory`, `paths`, `shipped_by`, `ships`, `leaves_out` and, on each commit, `via`.
+The module around it says `Leaves out: web/homepage`, or `Ships: web/homepage` when `shippedBy` names it. In JSON, `bumpit modules` marks a declared module with `declared`, and `next` and `explain` carry `directory`, `paths`, `derived_paths`, `shipped_by`, `ships`, `leaves_out` and, on each commit, `via`.
 
 The declarations describe the repository, as its `go.mod` files do, so bumpit reads them from the `bumpit.yaml` at the top of the repository, wherever `--repo` points: a run from a subdirectory reads them too, while its other settings still come from the config found in `--repo`. A config given with `--config` that declares `modules`, an empty list included, takes their place; one that does not leaves them to the top. A config found in a subdirectory cannot declare modules of its own, and a top `bumpit.yaml` that cannot be read stops the run, since its declarations would be lost.
 
@@ -293,7 +293,7 @@ modules: []   # modules with no go.mod; see "Modules without a go.mod"
 - `--promote` removes the current prerelease suffix and produces the final release for the same base version
 - `--start-version` and `--release-as` take the version with or without the tag prefix
 - `explain` reports the base release, the last final release whose commits it reads, and the tags it ignored, in a Go module the module and its dependents, and in a declared module what it reads and who carries it
-- the JSON payload of `next` and `explain` carries `base_tag`, `ignored_tags`, `module` and `dependents` beside the fields above, and, when `bumpit.yaml` declares modules, `directory`, `paths` and `shipped_by` for a declared module, `ships` and `leaves_out` for the module around one, and `via` on the commits that came in through a path or a carried module
+- the JSON payload of `next` and `explain` carries `base_tag`, `ignored_tags`, `module` and `dependents` beside the fields above, and, when `bumpit.yaml` declares modules, `directory`, `paths`, `derived_paths` and `shipped_by` for a declared module, `ships` and `leaves_out` for the module around one, and `via` on the commits that came in through a path or a carried module
 
 ## Version
 
