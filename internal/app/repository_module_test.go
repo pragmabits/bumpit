@@ -1,0 +1,144 @@
+package app
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestDiscoveryRefusesModuleDeclarations covers what the repository must
+// confirm of a declaration.
+func TestDiscoveryRefusesModuleDeclarations(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initHomepageRepository(t)
+	commitGoMod(t, repositoryPath, "tool", "example.com/repository/tool", "feat(tool): add the tool")
+	commitNewFile(t, repositoryPath, "web/homepage/admin/index.html", "admin", "feat: add the admin page")
+
+	cases := []struct {
+		name         string
+		declarations []ModuleDeclaration
+		message      string
+	}{
+		{name: "a Go module", declarations: []ModuleDeclaration{declare("tool", "", nil)}, message: "modules: tool: the directory holds a go.mod: it is a Go module, versioned by its go.mod"},
+		{name: "an untracked directory", declarations: []ModuleDeclaration{declare("docs", "", nil)}, message: "modules: docs: docs matches no tracked file"},
+		{name: "an untracked path", declarations: []ModuleDeclaration{declare("web/homepage", "", []string{"deploy/homepage"})}, message: "modules: web/homepage: deploy/homepage matches no tracked file"},
+		{name: "a path inside its directory", declarations: []ModuleDeclaration{declare("web/homepage", "", []string{"web/homepage/admin"})}, message: "modules: web/homepage: paths lists web/homepage/admin, inside its own directory, which the module reads already"},
+		{name: "a carrier that is no module", declarations: []ModuleDeclaration{declare("web/homepage", "", nil, "web")}, message: "modules: web/homepage: shippedBy lists web, which is no module of the repository"},
+		{name: "the prefix of a Go module", declarations: []ModuleDeclaration{declare("web/homepage", "tool/v", nil)}, message: "modules: web/homepage: its tag prefix tool/v is the one of tool too, so their tags could not be told apart"},
+		{name: "a prefix continued by a version", declarations: []ModuleDeclaration{declare("web/homepage", "v1", nil)}, message: "modules: web/homepage: its tag prefix v1 continues v, the one of ., with what can start a version"},
+		{name: "an invalid tag name", declarations: []ModuleDeclaration{declare("web/homepage", "home..page/v", nil)}, message: "modules: web/homepage: its tag prefix home..page/v does not make a valid tag name"},
+		{name: "a declared . beside a root go.mod", declarations: []ModuleDeclaration{declare(".", "", nil)}, message: "modules: .: the directory holds a go.mod"},
+		{name: "a cycle of carriers", declarations: []ModuleDeclaration{declare("web/brand", "brand/v", nil, "web/homepage"), declare("web/homepage", "", nil, "web/brand")}, message: "modules: web/brand: shippedBy forms a cycle: through web/homepage, the module carries itself"},
+	}
+	for _, testCase := range cases {
+		_, err := BuildReleasePlan(Options{Repository: repositoryPath, Modules: testCase.declarations})
+		if err == nil || !strings.Contains(err.Error(), testCase.message) {
+			t.Errorf("%s: BuildReleasePlan error = %v, want one containing %q", testCase.name, err, testCase.message)
+		}
+	}
+
+	nested := []ModuleDeclaration{declare("web/homepage", "", []string{"tool"}), declare("web/homepage/admin", "", nil)}
+	if _, err := BuildReleasePlan(Options{Repository: repositoryPath, Modules: nested}); err != nil {
+		t.Errorf("a path naming a Go module, and a module nested in another, were refused: %v", err)
+	}
+}
+
+// TestDiscoveryChecksGoCodeShipsDeclaredModule covers a Go module that ships
+// a declared module through Go code: a Go file inside it, or a //go:embed
+// pattern that reaches it.
+func TestDiscoveryChecksGoCodeShipsDeclaredModule(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		files        map[string]string
+		declarations []ModuleDeclaration
+		message      string
+	}{
+		{
+			name:         "a Go file inside, which is the Go module's own code",
+			files:        map[string]string{"web/homepage/serve.go": "package homepage\n"},
+			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
+		},
+		{
+			name:         "an embed from a package inside",
+			files:        map[string]string{"web/homepage/serve.go": "package homepage\n\nimport \"embed\"\n\n//go:embed dist\nvar site embed.FS\n"},
+			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
+			message:      "modules: web/homepage: web/homepage/serve.go:5:12 embeds dist into the module ., which then ships web/homepage; add . to its shippedBy",
+		},
+		{
+			name:         "an embed from the root",
+			files:        map[string]string{"site.go": embedSource("web/homepage/dist")},
+			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
+			message:      "modules: web/homepage: site.go:5:12 embeds web/homepage/dist into the module ., which then ships web/homepage; add . to its shippedBy",
+		},
+		{
+			name:         "an embed that misses",
+			files:        map[string]string{"site.go": embedSource("web/*.css")},
+			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
+		},
+		{
+			name:         "a test file",
+			files:        map[string]string{"web/homepage/serve_test.go": "package homepage\n"},
+			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
+		},
+		{
+			name:         "declared as shipped",
+			files:        map[string]string{"site.go": embedSource("web/homepage/dist"), "web/homepage/serve.go": "package homepage\n"},
+			declarations: []ModuleDeclaration{declare("web/homepage", "", nil, ".")},
+		},
+		{
+			name:         "an embed into the nested module only",
+			files:        map[string]string{"site.go": embedSource("web/homepage/dist")},
+			declarations: []ModuleDeclaration{declare("web", "", nil), declare("web/homepage", "", nil, ".")},
+		},
+		{
+			name:         "shipped through a carrier",
+			files:        map[string]string{"site.go": embedSource("web/homepage/dist")},
+			declarations: []ModuleDeclaration{declare("web", "", nil, "."), declare("web/homepage", "", nil, "web")},
+		},
+	}
+	for _, testCase := range cases {
+		repositoryPath := initHomepageRepository(t)
+		for name, content := range testCase.files {
+			commitNewFile(t, repositoryPath, name, content, "chore: add "+name)
+		}
+
+		_, err := BuildReleasePlan(Options{Repository: repositoryPath, Modules: testCase.declarations})
+		switch {
+		case testCase.message == "" && err != nil:
+			t.Errorf("%s: BuildReleasePlan returned error: %v", testCase.name, err)
+		case testCase.message != "" && (err == nil || !strings.Contains(err.Error(), testCase.message)):
+			t.Errorf("%s: BuildReleasePlan error = %v, want one containing %q", testCase.name, err, testCase.message)
+		}
+	}
+}
+
+// embedSource is a Go file of the root package that embeds pattern, at line
+// 5 and column 12.
+func embedSource(pattern string) string {
+	return "package repository\n\nimport \"embed\"\n\n//go:embed " + pattern + "\nvar site embed.FS\n"
+}
+
+// TestDiscoveryReadsGoFilesNoBuildCompiles covers Go files that no build
+// compiles, which embed nothing and must not stop the discovery: a template
+// of a generator, a file marked //go:build ignore, and a tracked file deleted
+// from the working tree.
+func TestDiscoveryReadsGoFilesNoBuildCompiles(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initHomepageRepository(t)
+	commitNewFile(t, repositoryPath, "template.go", "package {{.Package}}\n", "chore: add a template")
+	commitNewFile(t, repositoryPath, "web/homepage/serve.go", "//go:build ignore\n\npackage main\n\nimport \"embed\"\n\n//go:embed dist\nvar site embed.FS\n", "chore: add a development server")
+	commitNewFile(t, repositoryPath, "extra.go", "package repository\n", "chore: add a file")
+	if err := os.Remove(filepath.Join(repositoryPath, "extra.go")); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+
+	declarations := []ModuleDeclaration{declare("web/homepage", "", nil)}
+	if _, err := BuildReleasePlan(Options{Repository: repositoryPath, AllowDirty: true, Modules: declarations}); err != nil {
+		t.Fatalf("BuildReleasePlan returned error: %v", err)
+	}
+}

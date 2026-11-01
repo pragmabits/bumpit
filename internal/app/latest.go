@@ -13,6 +13,8 @@ type LatestOptions struct {
 	TagMatch   string
 	All        bool
 	Module     string
+	// Modules are the modules bumpit.yaml declares.
+	Modules []ModuleDeclaration
 }
 
 // LatestResult is the highest version tag, and the version it carries.
@@ -33,12 +35,13 @@ func FindLatestTag(opts LatestOptions) (LatestResult, error) {
 	if opts.Module != "" && opts.TagMatch != "" {
 		return LatestResult{}, fmt.Errorf("--module sets the tag pattern from the module; drop --match")
 	}
-	scope, err := resolveModuleScope(client, opts.Repository, opts.Module, opts.TagMatch)
+	scope, modules, err := resolveModuleScope(client, opts.Repository, opts.Module, opts.TagMatch, opts.Modules)
 	if err != nil {
 		return LatestResult{}, err
 	}
 
-	tag, version, err := latestSemverTag(client, tagPattern(scope, opts.TagMatch), opts.All)
+	otherPrefixes := otherModulePrefixes(scope, modules, opts.TagMatch)
+	tag, version, err := latestSemverTag(client, tagPattern(scope, opts.TagMatch), opts.All, otherPrefixes)
 	if err != nil {
 		return LatestResult{}, err
 	}

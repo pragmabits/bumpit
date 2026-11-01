@@ -102,6 +102,50 @@ func TestBuildReleasePlanChecksMajorVersionSuffix(t *testing.T) {
 	}
 }
 
+// TestBuildReleasePlanLeavesOutTagsOfAnotherModule covers a module whose
+// pattern also matches the tags of another module: v* matches vite/v0.1.0.
+// The tag is the version of the module in vite, not a tag of the root module
+// that fails to carry a version.
+func TestBuildReleasePlanLeavesOutTagsOfAnotherModule(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitGoMod(t, repositoryPath, ".", "example.com/repository", "feat: initial library")
+	commitGoMod(t, repositoryPath, "vite", "example.com/repository/vite", "feat(vite): initial vite")
+	runGit(t, repositoryPath, "tag", "-a", "vite/v0.1.0", "-m", "Release vite/v0.1.0")
+
+	plan, err := BuildReleasePlan(Options{Repository: repositoryPath})
+	if err != nil {
+		t.Fatalf("BuildReleasePlan of the root module before its first tag returned error: %v", err)
+	}
+	if plan.NextTag != "v0.1.0" || len(plan.IgnoredTags) != 0 {
+		t.Fatalf("unexpected first release of the root module: next %s, ignored %v", plan.NextTag, plan.IgnoredTags)
+	}
+	latest, err := FindLatestTag(LatestOptions{Repository: repositoryPath})
+	if err != nil || latest.Found {
+		t.Fatalf("FindLatestTag of the root module = %+v, %v; want no tag", latest, err)
+	}
+
+	runGit(t, repositoryPath, "tag", "-a", "v0.1.0", "-m", "Release v0.1.0")
+	commitFile(t, repositoryPath, "library.txt", "library", "fix: handle empty input")
+	plan, err = BuildReleasePlan(Options{Repository: repositoryPath})
+	if err != nil {
+		t.Fatalf("BuildReleasePlan of the root module returned error: %v", err)
+	}
+	if plan.NextTag != "v0.1.1" || len(plan.IgnoredTags) != 0 {
+		t.Fatalf("unexpected release of the root module: next %s, ignored %v", plan.NextTag, plan.IgnoredTags)
+	}
+
+	runGit(t, repositoryPath, "tag", "-a", "v01.2.3", "-m", "a malformed tag of the root module")
+	plan, err = BuildReleasePlan(Options{Repository: repositoryPath})
+	if err != nil {
+		t.Fatalf("BuildReleasePlan with a malformed root tag returned error: %v", err)
+	}
+	if len(plan.IgnoredTags) != 1 || plan.IgnoredTags[0].Tag != "v01.2.3" {
+		t.Fatalf("a malformed tag of the root module is no longer reported: %v", plan.IgnoredTags)
+	}
+}
+
 func TestBuildReleasePlanMatchTurnsModuleScopeOff(t *testing.T) {
 	t.Parallel()
 

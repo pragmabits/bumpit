@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pragmabits/bumpit/internal/gitx"
 	"github.com/pragmabits/bumpit/internal/semver"
 	"github.com/spf13/viper"
 )
@@ -21,7 +22,7 @@ type Config struct {
 	// Repository is the git repository, relative to the config file.
 	Repository string `mapstructure:"repository"`
 	// TagMatch is the tag pattern. Empty means "v*", or the tag prefix of
-	// the root Go module when the repository has one.
+	// the root module when the repository has one.
 	TagMatch string `mapstructure:"tagMatch"`
 	// StartVersion is the first release when the repository has no tag.
 	StartVersion string `mapstructure:"startVersion"`
@@ -31,6 +32,8 @@ type Config struct {
 	TagMessage string `mapstructure:"tagMessage"`
 	PreRelease string `mapstructure:"preRelease"`
 	Promote    *bool  `mapstructure:"promote"`
+	// Modules declares the modules of the repository that have no go.mod.
+	Modules []ModuleDeclaration `mapstructure:"modules"`
 }
 
 // LoadConfig reads the config at path over defaults and validates it. It
@@ -66,22 +69,26 @@ func LoadConfig(path string, defaults Config) (Config, string, error) {
 // DiscoverConfig loads bumpit.yaml, or else .bumpit.yaml, from the repository,
 // and returns ErrConfigNotFound when neither exists.
 func DiscoverConfig(repository string, defaults Config) (Config, string, error) {
-	for _, configPath := range configCandidatePaths(repository) {
-		if _, err := os.Stat(configPath); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return Config{}, "", err
-		}
-
-		config, resolvedConfigPath, err := LoadConfig(configPath, defaults)
-		if err == nil {
-			return config, resolvedConfigPath, nil
-		}
+	configPath, err := findConfig(repository)
+	if err != nil {
 		return Config{}, "", err
 	}
+	return LoadConfig(configPath, defaults)
+}
 
-	return Config{}, "", ErrConfigNotFound
+// findConfig is the path of bumpit.yaml, or else .bumpit.yaml, in directory,
+// and ErrConfigNotFound when neither exists.
+func findConfig(directory string) (string, error) {
+	for _, configPath := range configCandidatePaths(directory) {
+		_, err := os.Stat(configPath)
+		if err == nil {
+			return configPath, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", ErrConfigNotFound
 }
 
 func newConfigReader(defaults Config) *viper.Viper {
@@ -113,6 +120,72 @@ func configCandidatePaths(repository string) []string {
 	}
 }
 
+// readDeclarations is the modules a run reads: those of the config given
+// with --config when it declares modules, an empty list included, and else
+// those of the config at the top of the repository, wherever --repo points.
+// The declarations describe the repository, as its go.mod files do, so a run
+// from a subdirectory reads them too, and a config found in a subdirectory
+// cannot declare others. config is the config the run loaded, at configPath,
+// nil when it loaded none.
+func readDeclarations(explicit bool, repository string, config *Config, configPath string) ([]ModuleDeclaration, error) {
+	if explicit && config != nil && config.Modules != nil {
+		return config.Modules, nil
+	}
+
+	top, topConfig, err := findTopConfig(repository)
+	if err != nil {
+		return nil, err
+	}
+	if !explicit && config != nil && config.Modules != nil && !sameFile(configPath, topConfig) {
+		return nil, fmt.Errorf("%s declares modules, which bumpit reads from the bumpit.yaml at the top of the repository: move them to %s", configPath, filepath.Join(top, "bumpit.yaml"))
+	}
+	return topDeclarations(topConfig, config, configPath)
+}
+
+// findTopConfig is the top of the repository at repository and the config
+// there, empty when it has none. Outside a repository both are empty: the
+// command reports that repository is none.
+func findTopConfig(repository string) (string, string, error) {
+	top, err := gitx.New(repository).Top()
+	if err != nil {
+		return "", "", nil
+	}
+	topConfig, err := findConfig(top)
+	if errors.Is(err, ErrConfigNotFound) {
+		return top, "", nil
+	}
+	return top, topConfig, err
+}
+
+// topDeclarations reads the modules the config at topConfig declares, from
+// config when the run loaded that file already.
+func topDeclarations(topConfig string, config *Config, configPath string) ([]ModuleDeclaration, error) {
+	switch {
+	case topConfig == "":
+		return nil, nil
+	case config != nil && sameFile(configPath, topConfig):
+		return config.Modules, nil
+	}
+
+	loaded, _, err := LoadConfig(topConfig, Config{Repository: ".", Output: "text"})
+	if err != nil {
+		return nil, fmt.Errorf("read the modules of %s: %w", topConfig, err)
+	}
+	return loaded.Modules, nil
+}
+
+func sameFile(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		return false
+	}
+	rightInfo, err := os.Stat(right)
+	return err == nil && os.SameFile(leftInfo, rightInfo)
+}
+
 func resolveRepositoryPath(configPath, repository string) string {
 	if strings.TrimSpace(repository) == "" || filepath.IsAbs(repository) {
 		return repository
@@ -130,7 +203,10 @@ func validateConfig(config Config) error {
 		return err
 	}
 
-	return validateReleaseSettings(config)
+	if err := validateReleaseSettings(config); err != nil {
+		return err
+	}
+	return validateModuleDeclarations(config.Modules)
 }
 
 func validateRepositoryPath(repository string) error {

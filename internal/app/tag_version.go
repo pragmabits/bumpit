@@ -3,18 +3,15 @@ package app
 import (
 	"strings"
 
+	"github.com/pragmabits/bumpit/internal/gomod"
 	"github.com/pragmabits/bumpit/internal/semver"
 )
-
-// globMetacharacters are the characters that end the literal head of a git
-// tag pattern.
-const globMetacharacters = `*?[\`
 
 // tagPrefix is the text a tag pattern fixes before its first wildcard, which
 // every tag the pattern matches starts with: "v" for "v*", "release-" for
 // "release-*", "cmd/tool/v" for "cmd/tool/v*".
 func tagPrefix(pattern string) string {
-	if index := strings.IndexAny(pattern, globMetacharacters); index >= 0 {
+	if index := strings.IndexAny(pattern, gomod.GlobMetacharacters); index >= 0 {
 		return pattern[:index]
 	}
 	return pattern
@@ -29,6 +26,23 @@ func versionAfterPrefix(value, prefix string) (semver.Version, error) {
 		remainder = strings.TrimPrefix(remainder, "v")
 	}
 	return semver.Parse(remainder)
+}
+
+// versionOfAnotherModule reports whether tag is a version of a module whose
+// prefix prefixes lists: the prefix followed by a semantic version. Such a tag
+// matches the pattern of the module being read only because that prefix
+// starts with its own, and it belongs to the module with the more precise
+// prefix, as a file belongs to the module with the deepest directory.
+func versionOfAnotherModule(tag string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if !strings.HasPrefix(tag, prefix) {
+			continue
+		}
+		if _, err := versionAfterPrefix(tag, prefix); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // prefixOfTag is the prefix the next tag carries: the one the pattern fixes,

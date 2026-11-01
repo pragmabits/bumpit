@@ -26,7 +26,7 @@ func newRootCmd() *cobra.Command {
 	rootCommand := &cobra.Command{
 		Use:           "bumpit",
 		Short:         "Compute the next semantic version from local git history",
-		Long:          "bumpit reads the commits after the latest semantic version tag and computes the next release using Conventional Commits and SemVer rules. In a Go repository it versions one module at a time: the root module by default, or the one --module names, from its own tags and the commits under its directory.",
+		Long:          "bumpit reads the commits after the latest semantic version tag and computes the next release using Conventional Commits and SemVer rules. In a Go repository it versions one module at a time: the root module by default, or the one --module names, from its own tags and the commits under its directory. A part of the repository with no go.mod is versioned the same way once bumpit.yaml declares it under modules.",
 		Version:       version(),
 		SilenceUsage:  true,
 		SilenceErrors: true,

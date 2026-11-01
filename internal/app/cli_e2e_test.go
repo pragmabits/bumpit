@@ -577,3 +577,76 @@ func projectRoot(t *testing.T) string {
 
 	return filepath.Clean(filepath.Join(workingDirectory, "..", ".."))
 }
+
+// TestCLIEndToEndDeclaredModules runs the acceptance cases of a module that
+// has no go.mod against the built binary: listed, planned from its own tags
+// and commits, explained, tagged alone and with every module.
+func TestCLIEndToEndDeclaredModules(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initHomepageRepository(t)
+	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
+	commitFile(t, repositoryPath, "bumpit.yaml", "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n", "chore: configure bumpit")
+	binaryPath := buildCLI(t)
+
+	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath, "-g", "web/homepage"}, "homepage/v0.1.0")
+	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath}, "no release")
+	expectContains(t, binaryPath, []string{"modules", "-r", repositoryPath}, "web/homepage", "no go.mod", "homepage/v0.1.0")
+	expectContains(t, binaryPath, []string{"modules", "-r", repositoryPath, "-o", "json"}, `"declared": true`)
+	if output, _ := runCLI(binaryPath, "modules", "-r", repositoryPath, "-o", "json"); strings.Contains(output, `"path": ""`) {
+		t.Errorf("the JSON of a declared module carries an empty module path:\n%s", output)
+	}
+	expectOutput(t, binaryPath, []string{"tag", "-r", repositoryPath, "-g", "web/homepage"}, "created tag homepage/v0.1.0")
+
+	commitFile(t, repositoryPath, "library.txt", "library", "feat: add a helper")
+	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath, "-g", "web/homepage"}, "no release")
+	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath}, "v0.2.0")
+
+	commitFile(t, repositoryPath, "web/brand/logo.svg", "sharper", "fix: sharpen the logo")
+	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath, "-g", "web/homepage"}, "homepage/v0.1.1")
+	expectContains(t, binaryPath, []string{"explain", "-r", repositoryPath, "-g", "web/homepage"}, "Module: web/homepage (declared in bumpit.yaml)", "Paths: web/brand", "fix: sharpen the logo [patch: fix commit] via web/brand")
+	expectOutput(t, binaryPath, []string{"latest", "-r", repositoryPath, "-g", "web/homepage"}, "homepage/v0.1.0")
+
+	web := filepath.Join(repositoryPath, "web")
+	expectOutput(t, binaryPath, []string{"next", "-r", web, "-c", configPath, "-g", "homepage"}, "homepage/v0.1.1")
+	expectOutput(t, binaryPath, []string{"next", "-r", web, "-g", "homepage"}, "homepage/v0.1.1")
+	expectOutput(t, binaryPath, []string{"next", "-r", web}, "v0.2.0")
+
+	expectContains(t, binaryPath, []string{"tag", "-M", "-r", repositoryPath}, "created tag v0.2.0", "created tag homepage/v0.1.1")
+	tags, err := runGitOutput(repositoryPath, "tag", "--list")
+	if err != nil || !strings.Contains(tags, "homepage/v0.1.1") || !strings.Contains(tags, "v0.2.0") {
+		t.Fatalf("tag --all-modules left the tags %q, %v", tags, err)
+	}
+
+	commitFile(t, repositoryPath, "bumpit.yaml", "modules:\n  - directory: web/homepage\n", "chore: forget shippedBy")
+	output, err := runCLI(binaryPath, "modules", "-r", repositoryPath)
+	if err == nil || !strings.Contains(output, "modules: web/homepage: shippedBy is required") {
+		t.Errorf("a declaration without shippedBy printed %q, %v", output, err)
+	}
+}
+
+func expectOutput(t *testing.T, binaryPath string, arguments []string, want string) {
+	t.Helper()
+
+	output, err := runCLI(binaryPath, arguments...)
+	if err != nil {
+		t.Fatalf("%v returned error: %v\noutput: %s", arguments, err, output)
+	}
+	if strings.TrimSpace(output) != want {
+		t.Errorf("%v printed %q, want %q", arguments, strings.TrimSpace(output), want)
+	}
+}
+
+func expectContains(t *testing.T, binaryPath string, arguments []string, texts ...string) {
+	t.Helper()
+
+	output, err := runCLI(binaryPath, arguments...)
+	if err != nil {
+		t.Fatalf("%v returned error: %v\noutput: %s", arguments, err, output)
+	}
+	for _, text := range texts {
+		if !strings.Contains(output, text) {
+			t.Errorf("%v output lacks %q:\n%s", arguments, text, output)
+		}
+	}
+}

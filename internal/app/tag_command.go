@@ -18,7 +18,7 @@ func newTagCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "tag",
 		Short: "Create the computed annotated tag locally",
-		Long:  "bumpit tag creates the annotated tag of the next version at HEAD, locally. With --all-modules it plans every Go module of the repository and creates no tag when a plan fails; it then tags each module that has a release, and holds the ones that require another module of the repository below its newest version, since tagged now they would require the older one.",
+		Long:  "bumpit tag creates the annotated tag of the next version at HEAD, locally. With --all-modules it plans every module of the repository, its Go modules and the modules bumpit.yaml declares, and creates no tag when a plan fails; it then tags each module that has a release, and holds the Go modules that require another module of the repository below its newest version, since tagged now they would require the older one.",
 		RunE: func(command *cobra.Command, args []string) error {
 			outputWriter := command.OutOrStdout()
 
@@ -69,7 +69,7 @@ type moduleOutcome struct {
 	text      string
 }
 
-// tagAllModules tags every Go module that has a release and is not held. It
+// tagAllModules tags every module that has a release and is not held. It
 // plans every module before it creates a tag, creates none when a plan fails,
 // and fails when it creates none.
 func tagAllModules(command *cobra.Command, flags tagCommandFlags, config *Config) error {
@@ -77,12 +77,12 @@ func tagAllModules(command *cobra.Command, flags tagCommandFlags, config *Config
 		return err
 	}
 
-	releases, err := ListModules(Options{Repository: flags.repository, AllowDirty: flags.allowDirty, StartVersion: flags.startVersion})
+	releases, err := ListModules(Options{Repository: flags.repository, AllowDirty: flags.allowDirty, StartVersion: flags.startVersion, Modules: flags.declarations})
 	if err != nil {
 		return err
 	}
 	if len(releases) == 0 {
-		return fmt.Errorf("no Go module found; --all-modules tags the Go modules of the repository")
+		return fmt.Errorf("no Go module found; --all-modules tags the Go modules of the repository and the modules bumpit.yaml declares")
 	}
 	if err := planFailures(releases); err != nil {
 		return err

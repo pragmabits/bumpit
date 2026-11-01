@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/pragmabits/bumpit/internal/gitx"
@@ -9,11 +10,11 @@ import (
 	"github.com/pragmabits/bumpit/internal/semver"
 )
 
-// Options is what a release plan is built from, one field per flag of next,
-// explain and tag.
+// Options is what a release plan is built from: one field per flag of next,
+// explain and tag, and the modules bumpit.yaml declares.
 type Options struct {
 	Repository string
-	// TagMatch is the tag pattern; empty means "v*", or the root Go module's
+	// TagMatch is the tag pattern; empty means "v*", or the root module's
 	// tag prefix. It cannot be combined with Module.
 	TagMatch     string
 	AllowDirty   bool
@@ -22,9 +23,11 @@ type Options struct {
 	Promote      bool
 	// ReleaseAs is a version to release as is, validated like any other.
 	ReleaseAs string
-	// Module is the directory of the Go module to version, relative to
+	// Module is the directory of the module to version, relative to
 	// Repository.
 	Module string
+	// Modules are the modules bumpit.yaml declares.
+	Modules []ModuleDeclaration
 }
 
 // IgnoredTag is a tag that matches the pattern without carrying a semantic
@@ -42,25 +45,39 @@ type CommitDecision struct {
 	Bump     string `json:"bump"`
 	Reason   string `json:"reason"`
 	Breaking bool   `json:"breaking"`
+	// Via is the path or the module the commit came in through, empty when
+	// it touches the module's own directory.
+	Via string `json:"via,omitempty"`
 }
 
 // ReleasePlan is the next release and how it was reached: next and tag use
 // NextTag, and explain prints the rest.
 type ReleasePlan struct {
-	CurrentTag       string           `json:"current_tag,omitempty"`
-	CurrentVersion   string           `json:"current_version,omitempty"`
-	BaseTag          string           `json:"base_tag,omitempty"`
-	NextTag          string           `json:"next_tag,omitempty"`
-	NextVersion      string           `json:"next_version,omitempty"`
-	HasRelease       bool             `json:"has_release"`
-	HighestBump      string           `json:"highest_bump"`
-	CommitCount      int              `json:"commit_count"`
-	RelevantCommits  int              `json:"relevant_commit_count"`
-	Prefix           string           `json:"-"`
-	Analyses         []CommitDecision `json:"commits"`
-	IgnoredTags      []IgnoredTag     `json:"ignored_tags,omitempty"`
-	Module           string           `json:"module,omitempty"`
-	Dependents       []Dependent      `json:"dependents,omitempty"`
+	CurrentTag      string           `json:"current_tag,omitempty"`
+	CurrentVersion  string           `json:"current_version,omitempty"`
+	BaseTag         string           `json:"base_tag,omitempty"`
+	NextTag         string           `json:"next_tag,omitempty"`
+	NextVersion     string           `json:"next_version,omitempty"`
+	HasRelease      bool             `json:"has_release"`
+	HighestBump     string           `json:"highest_bump"`
+	CommitCount     int              `json:"commit_count"`
+	RelevantCommits int              `json:"relevant_commit_count"`
+	Prefix          string           `json:"-"`
+	Analyses        []CommitDecision `json:"commits"`
+	IgnoredTags     []IgnoredTag     `json:"ignored_tags,omitempty"`
+	Module          string           `json:"module,omitempty"`
+	Dependents      []Dependent      `json:"dependents,omitempty"`
+	// Directory, Paths and ShippedBy describe a module bumpit.yaml declares,
+	// which has no module path.
+	Directory string   `json:"directory,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+	ShippedBy []string `json:"shipped_by,omitempty"`
+	// Ships lists the declared modules whose commits the module reads, since
+	// its release carries them.
+	Ships []string `json:"ships,omitempty"`
+	// LeavesOut lists the declared modules nested in the module, whose
+	// commits it does not read.
+	LeavesOut        []string `json:"leaves_out,omitempty"`
 	highestBumpLevel semver.BumpLevel
 }
 
@@ -87,7 +104,7 @@ type releaseState struct {
 	// pending reports a releasable commit after the current tag.
 	pending bool
 	prefix  string
-	// scope is the Go module being versioned, nil outside one.
+	// scope is the module being versioned, nil outside one.
 	scope *moduleScope
 }
 
@@ -106,13 +123,19 @@ func BuildReleasePlan(opts Options) (ReleasePlan, error) {
 		return ReleasePlan{}, err
 	}
 
-	scope, err := resolveModuleScope(client, opts.Repository, opts.Module, opts.TagMatch)
+	scope, modules, err := resolveModuleScope(client, opts.Repository, opts.Module, opts.TagMatch, opts.Modules)
 	if err != nil {
 		return ReleasePlan{}, err
 	}
+	return planRelease(client, scope, otherModulePrefixes(scope, modules, opts.TagMatch), opts)
+}
 
+// planRelease computes the next version of the module scope versions, or of
+// the tags opts matches outside one, leaving out the versions of the modules
+// whose prefixes otherPrefixes lists.
+func planRelease(client gitx.Client, scope *moduleScope, otherPrefixes []string, opts Options) (ReleasePlan, error) {
 	tagMatch := tagPattern(scope, opts.TagMatch)
-	tags, err := collectVersionTags(client, tagMatch, false)
+	tags, err := collectVersionTags(client, tagMatch, false, otherPrefixes)
 	if err != nil {
 		return ReleasePlan{}, err
 	}
@@ -182,7 +205,7 @@ func openRepository(opts Options) (gitx.Client, error) {
 // next version carries, and whether a releasable one came after the current
 // tag.
 func analyzeCommits(client gitx.Client, state *releaseState) (ReleasePlan, error) {
-	commits, err := client.CommitsSince(state.base.tag, state.scope.pathspecs()...)
+	commits, err := state.scope.commitsSince(client, state.base.tag)
 	if err != nil {
 		return ReleasePlan{}, err
 	}
@@ -193,8 +216,8 @@ func analyzeCommits(client gitx.Client, state *releaseState) (ReleasePlan, error
 		CommitCount: len(commits),
 		Prefix:      state.prefix,
 		IgnoredTags: state.ignored,
-		Module:      state.scope.modulePath(),
 	}
+	state.scope.describe(&plan)
 	if state.current.tag != "" {
 		plan.CurrentVersion = state.current.version.String()
 	}
@@ -204,27 +227,59 @@ func analyzeCommits(client gitx.Client, state *releaseState) (ReleasePlan, error
 	plan.HighestBump = plan.highestBumpLevel.String()
 
 	state.level = plan.highestBumpLevel
-	state.pending, err = hasPendingChanges(client, *state)
+	state.pending, err = hasPendingChanges(client, *state, commits)
 	return plan, err
 }
 
-// hasPendingChanges reports a releasable commit after the current tag. When
-// the current tag is the base release, the commits already read are those.
-func hasPendingChanges(client gitx.Client, state releaseState) (bool, error) {
+// hasPendingChanges reports a releasable commit after the current tag, among
+// read, the commits read since the base release. When the current tag is the
+// base release, the commits already read are those.
+func hasPendingChanges(client gitx.Client, state releaseState, read []readCommit) (bool, error) {
 	if state.current.tag == state.base.tag {
 		return state.level > semver.BumpNone, nil
 	}
 
-	commits, err := client.CommitsSince(state.current.tag, state.scope.pathspecs()...)
+	commits, err := commitsAfterCurrent(client, state, read)
 	if err != nil {
 		return false, err
 	}
 	for _, commit := range commits {
-		if rules.Analyze(commit.Subject, commit.Body).Level > semver.BumpNone {
+		if analyzeCommit(commit).Level > semver.BumpNone {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// commitsAfterCurrent is what the module reads after the current tag. A
+// module read with several queries does not run them again when the base
+// release precedes the current tag, as a final release precedes the
+// prereleases after it: the commits after the current tag are then those of
+// read that the history after it holds. A module read with one query, and
+// any other case, reads them again.
+func commitsAfterCurrent(client gitx.Client, state releaseState, read []readCommit) ([]readCommit, error) {
+	if state.scope == nil || len(state.scope.queries()) == 1 {
+		return state.scope.commitsSince(client, state.current.tag)
+	}
+
+	precedes := state.base.tag == ""
+	if !precedes {
+		var err error
+		if precedes, err = client.IsAncestor(state.base.tag, state.current.tag); err != nil {
+			return nil, err
+		}
+	}
+	if !precedes {
+		return state.scope.commitsSince(client, state.current.tag)
+	}
+
+	hashes, err := client.CommitOrder(state.current.tag)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Clone(read), func(commit readCommit) bool {
+		return !slices.Contains(hashes, commit.Hash)
+	}), nil
 }
 
 // decideNext returns the next version, and whether there is one to release.
@@ -343,18 +398,19 @@ func verifyNext(client gitx.Client, state releaseState, next semver.Version, nex
 // latestSemverTag returns the highest semantic version tag by SemVer
 // precedence. Git orders tags lexicographically or by creation date, so
 // neither `git tag -l` nor `git describe` can be trusted to answer this.
-func latestSemverTag(client gitx.Client, tagMatch string, includeUnreachable bool) (string, semver.Version, error) {
-	tags, err := collectVersionTags(client, tagMatch, includeUnreachable)
+func latestSemverTag(client gitx.Client, tagMatch string, includeUnreachable bool, otherPrefixes []string) (string, semver.Version, error) {
+	tags, err := collectVersionTags(client, tagMatch, includeUnreachable, otherPrefixes)
 	if err != nil {
 		return "", semver.Version{}, err
 	}
 	return tags.current.tag, tags.current.version, nil
 }
 
-// collectVersionTags reads the tags matching tagMatch. Matching tags of which
-// none carries a semantic version are an error: bumpit would otherwise plan a
+// collectVersionTags reads the tags matching tagMatch, less the versions of
+// the modules whose prefixes otherPrefixes lists. Matching tags of which none
+// carries a semantic version are an error: bumpit would otherwise plan a
 // first release over tags it cannot read.
-func collectVersionTags(client gitx.Client, tagMatch string, includeUnreachable bool) (versionTags, error) {
+func collectVersionTags(client gitx.Client, tagMatch string, includeUnreachable bool, otherPrefixes []string) (versionTags, error) {
 	tags, err := listTags(client, tagMatch, includeUnreachable)
 	if err != nil {
 		return versionTags{}, err
@@ -363,6 +419,9 @@ func collectVersionTags(client gitx.Client, tagMatch string, includeUnreachable 
 	prefix := tagPrefix(tagMatch)
 	var collected versionTags
 	for _, tag := range tags {
+		if versionOfAnotherModule(tag, otherPrefixes) {
+			continue
+		}
 		version, err := versionAfterPrefix(tag, prefix)
 		if err != nil {
 			collected.ignored = append(collected.ignored, IgnoredTag{Tag: tag, Reason: err.Error()})
@@ -398,9 +457,24 @@ func (v *versionTags) add(candidate taggedVersion) {
 	}
 }
 
-// add records the analysis of one commit.
-func (r *ReleasePlan) add(commit gitx.Commit) {
+// analyzeCommit reads what a commit asks of the module. A breaking change
+// that comes in only through a module this one ships is minor here: the
+// contract it breaks is the shipped module's, and a breaking change of this
+// module is marked in a commit of its own.
+func analyzeCommit(commit readCommit) rules.Analysis {
 	analysis := rules.Analyze(commit.Subject, commit.Body)
+	if commit.shipped && analysis.Level == semver.BumpMajor {
+		analysis.Level = semver.BumpMinor
+		analysis.Bump = semver.BumpMinor.String()
+		analysis.Reason = analysis.Reason + ", of a module this one ships: minor here"
+		analysis.Breaking = false
+	}
+	return analysis
+}
+
+// add records the analysis of one commit.
+func (r *ReleasePlan) add(commit readCommit) {
+	analysis := analyzeCommit(commit)
 	if analysis.Level > semver.BumpNone {
 		r.RelevantCommits++
 	}
@@ -412,6 +486,7 @@ func (r *ReleasePlan) add(commit gitx.Commit) {
 		Bump:     analysis.Bump,
 		Reason:   analysis.Reason,
 		Breaking: analysis.Breaking,
+		Via:      commit.via,
 	})
 }
 

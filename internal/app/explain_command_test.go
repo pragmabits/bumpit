@@ -56,3 +56,45 @@ func TestWriteExplanationListsBaseReleaseAndIgnoredTags(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
+	t.Parallel()
+
+	declared := ReleasePlan{
+		NextTag:     "homepage/v0.1.1",
+		HighestBump: "patch",
+		Directory:   "web/homepage",
+		Paths:       []string{"web/brand", "deploy/homepage"},
+		ShippedBy:   []string{"."},
+		Analyses:    []CommitDecision{{Hash: "abc1234", Subject: "fix: sharpen the logo", Bump: "patch", Reason: "fix commit", Via: "web/brand"}},
+	}
+	shipper := ReleasePlan{
+		NextTag:     "v0.2.0",
+		HighestBump: "minor",
+		Module:      "example.com/repository",
+		Ships:       []string{"web/homepage"},
+		LeavesOut:   []string{"docs"},
+	}
+
+	cases := []struct {
+		plan  ReleasePlan
+		lines []string
+	}{
+		{plan: declared, lines: []string{
+			"Module: web/homepage (declared in bumpit.yaml)\nPaths: web/brand, deploy/homepage\nShipped by: .\nCurrent tag:",
+			"- abc1234 fix: sharpen the logo [patch: fix commit] via web/brand\n",
+		}},
+		{plan: shipper, lines: []string{"Module: example.com/repository\nShips: web/homepage\nLeaves out: docs\nCurrent tag:"}},
+	}
+	for _, testCase := range cases {
+		var text strings.Builder
+		if err := writeExplanation(&text, testCase.plan); err != nil {
+			t.Fatalf("writeExplanation returned error: %v", err)
+		}
+		for _, line := range testCase.lines {
+			if !strings.Contains(text.String(), line) {
+				t.Errorf("explanation lacks %q:\n%s", line, text.String())
+			}
+		}
+	}
+}

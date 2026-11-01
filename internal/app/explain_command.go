@@ -44,9 +44,7 @@ func newExplainCmd() *cobra.Command {
 // built first and written once, so a failing writer is reported by one error.
 func writeExplanation(writer io.Writer, plan ReleasePlan) error {
 	var text strings.Builder
-	if plan.Module != "" {
-		fmt.Fprintf(&text, "Module: %s\n", plan.Module)
-	}
+	writeModuleLines(&text, plan)
 	fmt.Fprintf(&text, "Current tag: %s\n", valueOr(plan.CurrentTag, "none"))
 	fmt.Fprintf(&text, "Base release: %s\n", valueOr(plan.BaseTag, "none"))
 	fmt.Fprintf(&text, "Next version: %s\n", valueOr(plan.NextTag, "no release"))
@@ -60,7 +58,11 @@ func writeExplanation(writer io.Writer, plan ReleasePlan) error {
 		text.WriteString("\nCommit analysis:\n")
 	}
 	for _, commitAnalysis := range plan.Analyses {
-		fmt.Fprintf(&text, "- %s %s [%s: %s]\n", commitAnalysis.Hash, commitAnalysis.Subject, commitAnalysis.Bump, commitAnalysis.Reason)
+		fmt.Fprintf(&text, "- %s %s [%s: %s]", commitAnalysis.Hash, commitAnalysis.Subject, commitAnalysis.Bump, commitAnalysis.Reason)
+		if commitAnalysis.Via != "" {
+			fmt.Fprintf(&text, " via %s", commitAnalysis.Via)
+		}
+		text.WriteString("\n")
 	}
 
 	if len(plan.IgnoredTags) > 0 {
@@ -79,6 +81,32 @@ func writeExplanation(writer io.Writer, plan ReleasePlan) error {
 
 	_, err := io.WriteString(writer, text.String())
 	return err
+}
+
+// writeModuleLines writes which module the plan versions and what it reads
+// beyond its own directory or leaves out of it.
+func writeModuleLines(text *strings.Builder, plan ReleasePlan) {
+	switch {
+	case plan.Directory != "":
+		fmt.Fprintf(text, "Module: %s (declared in bumpit.yaml)\n", plan.Directory)
+	case plan.Module != "":
+		fmt.Fprintf(text, "Module: %s\n", plan.Module)
+	}
+
+	lists := []struct {
+		label  string
+		values []string
+	}{
+		{label: "Paths", values: plan.Paths},
+		{label: "Shipped by", values: plan.ShippedBy},
+		{label: "Ships", values: plan.Ships},
+		{label: "Leaves out", values: plan.LeavesOut},
+	}
+	for _, list := range lists {
+		if len(list.values) > 0 {
+			fmt.Fprintf(text, "%s: %s\n", list.label, strings.Join(list.values, ", "))
+		}
+	}
 }
 
 func valueOr(value, fallback string) string {

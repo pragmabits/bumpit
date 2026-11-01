@@ -14,8 +14,8 @@ func newModulesCmd() *cobra.Command {
 
 	command := &cobra.Command{
 		Use:   "modules",
-		Short: "List the Go modules of the repository and their next versions",
-		Long:  "bumpit modules finds every tracked go.mod, leaving out vendor, testdata and directories starting with . or _, and plans the next release of each module from its own tags and the commits under its directory. A release that requires another module of the repository below its newest version is held, as bumpit tag --all-modules holds it.",
+		Short: "List the modules of the repository and their next versions",
+		Long:  "bumpit modules finds every tracked go.mod, leaving out vendor, testdata and directories starting with . or _, and every module bumpit.yaml declares, and plans the next release of each module from its own tags and the commits it reads. A release of a Go module that requires another module of the repository below its newest version is held, as bumpit tag --all-modules holds it.",
 		RunE: func(command *cobra.Command, args []string) error {
 			outputWriter := command.OutOrStdout()
 
@@ -42,8 +42,9 @@ func newModulesCmd() *cobra.Command {
 	return command
 }
 
-// writeModules writes one row per module: its directory, module path, current
-// tag and next tag, or why its plan failed.
+// writeModules writes one row per module: its directory, its module path, or
+// no go.mod for a module bumpit.yaml declares, its current tag and its next
+// tag, or why its plan failed.
 func writeModules(writer io.Writer, releases []ModuleRelease) error {
 	if len(releases) == 0 {
 		_, err := fmt.Fprintln(writer, "no Go module found")
@@ -54,7 +55,7 @@ func writeModules(writer io.Writer, releases []ModuleRelease) error {
 	table := tabwriter.NewWriter(&text, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "DIRECTORY\tMODULE\tCURRENT\tNEXT")
 	for _, release := range releases {
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n", release.Directory, release.Path, valueOr(release.CurrentTag, "none"), nextColumn(release))
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n", release.Directory, moduleColumn(release), valueOr(release.CurrentTag, "none"), nextColumn(release))
 	}
 	if err := table.Flush(); err != nil {
 		return err
@@ -62,6 +63,13 @@ func writeModules(writer io.Writer, releases []ModuleRelease) error {
 
 	_, err := io.WriteString(writer, text.String())
 	return err
+}
+
+func moduleColumn(release ModuleRelease) string {
+	if release.Declared {
+		return "no go.mod"
+	}
+	return release.Path
 }
 
 func nextColumn(release ModuleRelease) string {

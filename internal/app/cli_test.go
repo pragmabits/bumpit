@@ -3,6 +3,9 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -218,5 +221,130 @@ func TestApplyConfigReturnsTagSection(t *testing.T) {
 	}
 	if config.TagMessage != "Release from config" {
 		t.Fatalf("unexpected tag message: %s", config.TagMessage)
+	}
+}
+
+// TestApplyConfigPassesModuleDeclarations covers every command that plans a
+// release or reads tags: the modules bumpit.yaml declares reach its options.
+func TestApplyConfigPassesModuleDeclarations(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "bumpit.yaml")
+	if err := os.WriteFile(configPath, []byte("modules:\n  - directory: web\n    shippedBy: []\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	want := []ModuleDeclaration{declare("web", "", nil)}
+
+	releaseFlags, tagFlags, modulesFlags, latestFlags := releasePlanFlags{}, tagCommandFlags{}, modulesCommandFlags{}, latestCommandFlags{}
+	commands := []struct {
+		name     string
+		bind     func(*cobra.Command)
+		apply    func(*cobra.Command) error
+		declared func() []ModuleDeclaration
+	}{
+		{name: "next", bind: func(command *cobra.Command) { releaseFlags.bind(command, true) }, apply: func(command *cobra.Command) error {
+			_, err := releaseFlags.applyConfig(command)
+			return err
+		}, declared: func() []ModuleDeclaration { return releaseFlags.options().Modules }},
+		{name: "tag", bind: tagFlags.bind, apply: func(command *cobra.Command) error {
+			_, err := tagFlags.applyConfig(command)
+			return err
+		}, declared: func() []ModuleDeclaration { return tagFlags.options().Modules }},
+		{name: "modules", bind: modulesFlags.bind, apply: modulesFlags.applyConfig, declared: func() []ModuleDeclaration { return modulesFlags.options().Modules }},
+		{name: "latest", bind: latestFlags.bind, apply: func(command *cobra.Command) error {
+			_, err := latestFlags.applyConfig(command)
+			return err
+		}, declared: func() []ModuleDeclaration { return latestFlags.options().Modules }},
+	}
+	for _, testCase := range commands {
+		command := &cobra.Command{Use: testCase.name}
+		testCase.bind(command)
+		if err := command.Flags().Set("config", configPath); err != nil {
+			t.Fatalf("%s: Set(config) returned error: %v", testCase.name, err)
+		}
+		if err := testCase.apply(command); err != nil {
+			t.Fatalf("%s: applyConfig returned error: %v", testCase.name, err)
+		}
+		if got := testCase.declared(); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: options carry %#v, want %#v", testCase.name, got, want)
+		}
+	}
+}
+
+// TestApplyConfigReadsDeclarationsAtTheTop covers where a run takes the
+// modules from: the bumpit.yaml at the top of the repository, wherever --repo
+// points, unless the config given with --config declares them.
+func TestApplyConfigReadsDeclarationsAtTheTop(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitNewFile(t, repositoryPath, "web/homepage/index.html", "homepage", "feat: add the homepage")
+	commitNewFile(t, repositoryPath, "docs/guide.md", "guide", "docs: write the guide")
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directory: web/homepage\n    shippedBy: []\n")
+	elsewhere := t.TempDir()
+	writeConfig(t, filepath.Join(elsewhere, "docs.yaml"), "repository: "+repositoryPath+"\nmodules:\n  - directory: docs\n    shippedBy: []\n")
+	writeConfig(t, filepath.Join(elsewhere, "none.yaml"), "repository: "+repositoryPath+"\nmodules: []\n")
+	writeConfig(t, filepath.Join(elsewhere, "silent.yaml"), "repository: "+repositoryPath+"\ntagMessage: Release\n")
+	web := filepath.Join(repositoryPath, "web")
+
+	runs := []struct {
+		name      string
+		arguments map[string]string
+		want      []string
+	}{
+		{name: "from the top", arguments: map[string]string{"repo": repositoryPath}, want: []string{"web/homepage"}},
+		{name: "from a subdirectory", arguments: map[string]string{"repo": web}, want: []string{"web/homepage"}},
+		{name: "a config that declares modules", arguments: map[string]string{"config": filepath.Join(elsewhere, "docs.yaml")}, want: []string{"docs"}},
+		{name: "a config that declares none", arguments: map[string]string{"config": filepath.Join(elsewhere, "none.yaml")}},
+		{name: "a config silent on modules", arguments: map[string]string{"config": filepath.Join(elsewhere, "silent.yaml")}, want: []string{"web/homepage"}},
+	}
+	for _, run := range runs {
+		flags, err := applyReleaseConfig(run.arguments)
+		if err != nil {
+			t.Fatalf("%s: applyConfig returned error: %v", run.name, err)
+		}
+		var got []string
+		for _, declaration := range flags.declarations {
+			got = append(got, declaration.Directory)
+		}
+		if !slices.Equal(got, run.want) {
+			t.Errorf("%s: declarations %q, want %q", run.name, got, run.want)
+		}
+	}
+
+	writeConfig(t, filepath.Join(web, "bumpit.yaml"), "modules:\n  - directory: web/homepage\n    shippedBy: []\n")
+	_, err := applyReleaseConfig(map[string]string{"repo": web})
+	want := filepath.Join(web, "bumpit.yaml") + " declares modules, which bumpit reads from the bumpit.yaml at the top of the repository: move them to " + filepath.Join(repositoryPath, "bumpit.yaml")
+	if err == nil || err.Error() != want {
+		t.Errorf("a config of a subdirectory that declares modules: error = %v, want %q", err, want)
+	}
+
+	if err := os.Remove(filepath.Join(web, "bumpit.yaml")); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules: [\n")
+	if _, err := applyReleaseConfig(map[string]string{"repo": web}); err == nil || !strings.Contains(err.Error(), "read the modules of "+filepath.Join(repositoryPath, "bumpit.yaml")) {
+		t.Errorf("a top config that cannot be read: error = %v", err)
+	}
+}
+
+func applyReleaseConfig(arguments map[string]string) (releasePlanFlags, error) {
+	flags := releasePlanFlags{}
+	command := &cobra.Command{Use: "next"}
+	flags.bind(command, true)
+	for name, value := range arguments {
+		if err := command.Flags().Set(name, value); err != nil {
+			return flags, err
+		}
+	}
+	_, err := flags.applyConfig(command)
+	return flags, err
+}
+
+func writeConfig(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
 	}
 }

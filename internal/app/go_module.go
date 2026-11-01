@@ -1,9 +1,7 @@
 package app
 
 import (
-	"fmt"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -18,19 +16,6 @@ type Dependent struct {
 	Directory string `json:"directory"`
 	Path      string `json:"path"`
 	Requires  string `json:"requires"`
-}
-
-// ModuleRelease is the next release of one module, as bumpit modules lists
-// it. A module whose plan failed carries the error instead.
-type ModuleRelease struct {
-	Directory  string `json:"directory"`
-	Path       string `json:"path"`
-	CurrentTag string `json:"current_tag,omitempty"`
-	NextTag    string `json:"next_tag,omitempty"`
-	HasRelease bool   `json:"has_release"`
-	// Hold is why the release waits, nil when it does not.
-	Hold  *Hold  `json:"hold,omitempty"`
-	Error string `json:"error,omitempty"`
 }
 
 // Hold is why the release of a module waits: it requires modules of the
@@ -56,60 +41,20 @@ type OutdatedRequirement struct {
 	Held bool `json:"held,omitempty"`
 }
 
-// moduleScope is the Go module a plan versions: its tags start with the
-// module's tag prefix, and its commits are those touching its directory,
-// less the modules nested in it.
-type moduleScope struct {
-	module  gomod.Module
-	modules []gomod.Module
-}
-
-// ListModules plans the next release of every Go module in the repository,
-// each with the start version of opts, and holds the releases that require
-// another module below its newest version. A module whose plan fails is
-// listed with the error, so that one module does not hide the others.
-func ListModules(opts Options) ([]ModuleRelease, error) {
-	client, err := openRepository(opts)
-	if err != nil {
-		return nil, err
-	}
-	modules, top, err := discoverModules(client)
-	if err != nil {
-		return nil, err
-	}
-
-	releases := make([]ModuleRelease, 0, len(modules))
-	newest := map[string]semver.Version{}
-	for _, module := range modules {
-		moduleOptions := Options{Repository: top, AllowDirty: true, StartVersion: opts.StartVersion, Module: module.Directory}
-		release := ModuleRelease{Directory: module.Directory, Path: module.Path}
-		plan, err := BuildReleasePlan(moduleOptions)
-		if err != nil {
-			release.Error = err.Error()
-		}
-		release.CurrentTag, release.NextTag, release.HasRelease = plan.CurrentTag, plan.NextTag, plan.HasRelease
-		releases = append(releases, release)
-		if version, ok := plan.newestVersion(); ok {
-			newest[module.Path] = version
-		}
-	}
-	holdReleases(releases, modules, newest)
-	return releases, nil
-}
-
 // holdReleases holds the release of every module that requires a module of
 // the repository below its newest version. Tagged at the same commit, the
 // release would require the older version, while the code it was built
 // against may need the newer one. releases and modules share their order.
-func holdReleases(releases []ModuleRelease, modules []gomod.Module, newest map[string]semver.Version) {
+func holdReleases(releases []ModuleRelease, modules []repositoryModule, newest map[string]semver.Version) {
+	goModules := goModulesOf(modules)
 	holds := map[string]*Hold{}
 	for index, module := range modules {
-		if !releases[index].HasRelease {
+		if module.declared() || !releases[index].HasRelease {
 			continue
 		}
-		if outdated := outdatedRequirements(module, modules, newest); len(outdated) > 0 {
+		if outdated := outdatedRequirements(*module.goModule, goModules, newest); len(outdated) > 0 {
 			releases[index].Hold = &Hold{Requirements: outdated}
-			holds[module.Directory] = releases[index].Hold
+			holds[module.directory] = releases[index].Hold
 		}
 	}
 
@@ -164,38 +109,6 @@ func waitsOnItself(start string, holds map[string]*Hold) bool {
 	return false
 }
 
-// resolveModuleScope picks the module a plan versions: the directory given
-// with --module, relative to the repository path, or, with neither --module
-// nor --match, the root module when the repository has one. Outside a Go
-// module it returns nil, and the plan reads tags by pattern alone.
-func resolveModuleScope(client gitx.Client, repository, moduleDirectory, tagMatch string) (*moduleScope, error) {
-	if moduleDirectory == "" && tagMatch != "" {
-		return nil, nil
-	}
-
-	modules, top, err := discoverModules(client)
-	if err != nil {
-		return nil, err
-	}
-
-	directory := "."
-	if moduleDirectory != "" {
-		if directory, err = relativeToTop(top, repository, moduleDirectory); err != nil {
-			return nil, err
-		}
-	}
-	for _, module := range modules {
-		if module.Directory == directory {
-			return &moduleScope{module: module, modules: modules}, nil
-		}
-	}
-
-	if moduleDirectory == "" {
-		return nil, nil
-	}
-	return nil, fmt.Errorf("no Go module in %s: the directory holds no tracked go.mod", moduleDirectory)
-}
-
 // discoverModules loads every tracked go.mod of the repository, leaving out
 // the directories the go command ignores.
 func discoverModules(client gitx.Client) ([]gomod.Module, string, error) {
@@ -226,86 +139,53 @@ func discoverModules(client gitx.Client) ([]gomod.Module, string, error) {
 
 // compareModules orders the root module first and the others by directory.
 func compareModules(left, right gomod.Module) int {
+	return compareDirectories(left.Directory, right.Directory)
+}
+
+// compareDirectories orders the root directory first and the others by name.
+func compareDirectories(left, right string) int {
 	switch {
-	case left.Directory == right.Directory:
+	case left == right:
 		return 0
-	case left.Directory == ".":
+	case left == ".":
 		return -1
-	case right.Directory == ".":
+	case right == ".":
 		return 1
 	default:
-		return strings.Compare(left.Directory, right.Directory)
+		return strings.Compare(left, right)
 	}
 }
 
-// relativeToTop turns a directory given relative to the repository path into
-// one relative to the top of the working tree, slash separated.
-func relativeToTop(top, repository, directory string) (string, error) {
-	absolute, err := filepath.Abs(filepath.Join(repository, directory))
-	if err != nil {
-		return "", err
-	}
-	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
-		absolute = resolved
-	}
-
-	relative, err := filepath.Rel(top, absolute)
-	if err != nil {
-		return "", err
-	}
-	return filepath.ToSlash(relative), nil
-}
-
-// tagPattern is the pattern of the tags a plan reads: the module's tag prefix
-// in a module scope, else the --match pattern, else "v*".
-func tagPattern(scope *moduleScope, tagMatch string) string {
-	switch {
-	case scope != nil:
-		return scope.module.TagPrefix() + "*"
-	case tagMatch != "":
-		return tagMatch
-	default:
-		return "v*"
-	}
-}
-
-// pathspecs selects the files of the module: its directory, less every module
-// nested in it. Outside a module scope, every commit counts.
-func (m *moduleScope) pathspecs() []string {
-	if m == nil {
-		return nil
-	}
-
-	pathspecs := []string{":/"}
-	if m.module.Directory != "." {
-		pathspecs = []string{":(top)" + m.module.Directory}
-	}
-	for _, other := range m.modules {
-		if nestedIn(other.Directory, m.module.Directory) {
-			pathspecs = append(pathspecs, ":(top,exclude)"+other.Directory)
+// goModulesOf keeps the go.mod of each Go module among modules.
+func goModulesOf(modules []repositoryModule) []gomod.Module {
+	var goModules []gomod.Module
+	for _, module := range modules {
+		if !module.declared() {
+			goModules = append(goModules, *module.goModule)
 		}
 	}
-	return pathspecs
+	return goModules
 }
 
-// checkVersion refuses a version the module path cannot carry.
+// checkVersion refuses a version the module path of a Go module cannot
+// carry. A declared module has no module path and takes any version.
 func (m *moduleScope) checkVersion(next semver.Version) error {
-	if m == nil {
+	if m == nil || m.module.declared() {
 		return nil
 	}
-	return m.module.CheckVersion("v" + next.String())
+	return m.module.goModule.CheckVersion("v" + next.String())
 }
 
-// dependentsBelow lists the modules of the repository that require the module
-// at a version below next.
+// dependentsBelow lists the Go modules of the repository that require the
+// Go module at a version below next.
 func (m *moduleScope) dependentsBelow(next semver.Version) []Dependent {
-	if m == nil {
+	if m == nil || m.module.declared() {
 		return nil
 	}
 
 	var dependents []Dependent
-	for _, other := range m.modules {
-		required, ok := other.Requires[m.module.Path]
+	for _, other := range goModulesOf(m.modules) {
+		required, ok := other.Requires[m.module.goModule.Path]
 		if ok && requiresBelow(required, next) {
 			dependents = append(dependents, Dependent{Directory: other.Directory, Path: other.Path, Requires: required})
 		}
@@ -332,20 +212,4 @@ func (r ReleasePlan) newestVersion() (semver.Version, bool) {
 	}
 	version, err := semver.Parse(newest)
 	return version, err == nil
-}
-
-func (m *moduleScope) modulePath() string {
-	if m == nil {
-		return ""
-	}
-	return m.module.Path
-}
-
-// nestedIn reports whether the module in directory lives inside the module
-// in parent, which then does not own its files.
-func nestedIn(directory, parent string) bool {
-	if directory == parent {
-		return false
-	}
-	return parent == "." || strings.HasPrefix(directory, parent+"/")
 }

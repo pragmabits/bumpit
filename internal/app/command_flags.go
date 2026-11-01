@@ -20,11 +20,11 @@ func bindRepositoryFlag(command *cobra.Command, target *string) {
 }
 
 func bindTagMatchFlag(command *cobra.Command, target *string) {
-	command.Flags().StringVarP(target, "match", "t", "", `tag pattern used to filter candidate tags (default "v*", or the Go module's tag prefix)`)
+	command.Flags().StringVarP(target, "match", "t", "", `tag pattern used to filter candidate tags (default "v*", or the module's tag prefix)`)
 }
 
 func bindModuleFlag(command *cobra.Command, target *string) {
-	command.Flags().StringVarP(target, "module", "g", "", "Go module directory to version, relative to --repo; sets the tag pattern and the commits read")
+	command.Flags().StringVarP(target, "module", "g", "", "directory of the module to version, relative to --repo: a Go module, or one bumpit.yaml declares; sets the tag pattern and the commits read")
 }
 
 func bindStartVersionFlag(command *cobra.Command, target *string) {
@@ -48,7 +48,7 @@ func bindReleaseAsFlag(command *cobra.Command, target *string) {
 }
 
 func bindAllModulesFlag(command *cobra.Command, target *bool) {
-	command.Flags().BoolVarP(target, "all-modules", "M", false, "tag every Go module of the repository that has a release, holding the ones that require another module below its newest version")
+	command.Flags().BoolVarP(target, "all-modules", "M", false, "tag every module of the repository that has a release, Go modules and the modules bumpit.yaml declares, holding the Go modules that require another below its newest version")
 }
 
 func bindOutputFlag(command *cobra.Command, target *string) {
@@ -66,6 +66,7 @@ type releasePlanFlags struct {
 	promote      bool
 	releaseAs    string
 	module       string
+	declarations []ModuleDeclaration
 }
 
 func (f releasePlanFlags) defaults() Config {
@@ -92,6 +93,7 @@ func (f releasePlanFlags) options() Options {
 		Promote:      f.promote,
 		ReleaseAs:    f.releaseAs,
 		Module:       f.module,
+		Modules:      f.declarations,
 	}
 }
 
@@ -111,34 +113,34 @@ func (f *releasePlanFlags) bind(command *cobra.Command, includeOutput bool) {
 }
 
 func (f *releasePlanFlags) applyConfig(command *cobra.Command) (*Config, error) {
-	config, _, err := loadConfig(f.configPath, f.repository, f.defaults())
+	config, configPath, err := loadConfig(f.configPath, f.repository, f.defaults())
 	if err != nil {
 		return nil, err
 	}
-	if config == nil {
-		return nil, nil
+	if config != nil {
+		commandFlags := command.Flags()
+		overrideString(commandFlags, "repo", &f.repository, config.Repository)
+		overrideString(commandFlags, "match", &f.tagMatch, config.TagMatch)
+		overrideString(commandFlags, "start-version", &f.startVersion, config.StartVersion)
+		overrideBool(commandFlags, "allow-dirty", &f.allowDirty, config.AllowDirty)
+		overrideString(commandFlags, "output", &f.output, config.Output)
+		overrideString(commandFlags, "pre", &f.preRelease, config.PreRelease)
+		overrideBool(commandFlags, "promote", &f.promote, config.Promote)
 	}
 
-	commandFlags := command.Flags()
-	overrideString(commandFlags, "repo", &f.repository, config.Repository)
-	overrideString(commandFlags, "match", &f.tagMatch, config.TagMatch)
-	overrideString(commandFlags, "start-version", &f.startVersion, config.StartVersion)
-	overrideBool(commandFlags, "allow-dirty", &f.allowDirty, config.AllowDirty)
-	overrideString(commandFlags, "output", &f.output, config.Output)
-	overrideString(commandFlags, "pre", &f.preRelease, config.PreRelease)
-	overrideBool(commandFlags, "promote", &f.promote, config.Promote)
-
-	return config, nil
+	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
+	return config, err
 }
 
 type latestCommandFlags struct {
-	configPath string
-	repository string
-	tagMatch   string
-	output     string
-	all        bool
-	noPrefix   bool
-	module     string
+	configPath   string
+	repository   string
+	tagMatch     string
+	output       string
+	all          bool
+	noPrefix     bool
+	module       string
+	declarations []ModuleDeclaration
 }
 
 func (f latestCommandFlags) defaults() Config {
@@ -155,6 +157,7 @@ func (f latestCommandFlags) options() LatestOptions {
 		TagMatch:   f.tagMatch,
 		All:        f.all,
 		Module:     f.module,
+		Modules:    f.declarations,
 	}
 }
 
@@ -169,20 +172,19 @@ func (f *latestCommandFlags) bind(command *cobra.Command) {
 }
 
 func (f *latestCommandFlags) applyConfig(command *cobra.Command) (*Config, error) {
-	config, _, err := loadConfig(f.configPath, f.repository, f.defaults())
+	config, configPath, err := loadConfig(f.configPath, f.repository, f.defaults())
 	if err != nil {
 		return nil, err
 	}
-	if config == nil {
-		return nil, nil
+	if config != nil {
+		flags := command.Flags()
+		overrideString(flags, "repo", &f.repository, config.Repository)
+		overrideString(flags, "match", &f.tagMatch, config.TagMatch)
+		overrideString(flags, "output", &f.output, config.Output)
 	}
 
-	flags := command.Flags()
-	overrideString(flags, "repo", &f.repository, config.Repository)
-	overrideString(flags, "match", &f.tagMatch, config.TagMatch)
-	overrideString(flags, "output", &f.output, config.Output)
-
-	return config, nil
+	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
+	return config, err
 }
 
 type tagCommandFlags struct {
@@ -197,6 +199,7 @@ type tagCommandFlags struct {
 	releaseAs    string
 	module       string
 	allModules   bool
+	declarations []ModuleDeclaration
 }
 
 func (f tagCommandFlags) defaults() Config {
@@ -224,6 +227,7 @@ func (f tagCommandFlags) options() Options {
 		Promote:      f.promote,
 		ReleaseAs:    f.releaseAs,
 		Module:       f.module,
+		Modules:      f.declarations,
 	}
 }
 
@@ -242,23 +246,22 @@ func (f *tagCommandFlags) bind(command *cobra.Command) {
 }
 
 func (f *tagCommandFlags) applyConfig(command *cobra.Command) (*Config, error) {
-	config, _, err := loadConfig(f.configPath, f.repository, f.defaults())
+	config, configPath, err := loadConfig(f.configPath, f.repository, f.defaults())
 	if err != nil {
 		return nil, err
 	}
-	if config == nil {
-		return nil, nil
+	if config != nil {
+		flags := command.Flags()
+		overrideString(flags, "repo", &f.repository, config.Repository)
+		overrideString(flags, "match", &f.tagMatch, config.TagMatch)
+		overrideString(flags, "start-version", &f.startVersion, config.StartVersion)
+		overrideBool(flags, "allow-dirty", &f.allowDirty, config.AllowDirty)
+		overrideString(flags, "pre", &f.preRelease, config.PreRelease)
+		overrideBool(flags, "promote", &f.promote, config.Promote)
 	}
 
-	flags := command.Flags()
-	overrideString(flags, "repo", &f.repository, config.Repository)
-	overrideString(flags, "match", &f.tagMatch, config.TagMatch)
-	overrideString(flags, "start-version", &f.startVersion, config.StartVersion)
-	overrideBool(flags, "allow-dirty", &f.allowDirty, config.AllowDirty)
-	overrideString(flags, "pre", &f.preRelease, config.PreRelease)
-	overrideBool(flags, "promote", &f.promote, config.Promote)
-
-	return config, nil
+	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
+	return config, err
 }
 
 // checkAllModules refuses the flags that pick one module or one version,
@@ -290,10 +293,11 @@ func (f tagCommandFlags) checkAllModules(commandFlags *pflag.FlagSet) error {
 }
 
 type modulesCommandFlags struct {
-	configPath string
-	repository string
-	output     string
-	allowDirty bool
+	configPath   string
+	repository   string
+	output       string
+	allowDirty   bool
+	declarations []ModuleDeclaration
 }
 
 func (f modulesCommandFlags) defaults() Config {
@@ -309,6 +313,7 @@ func (f modulesCommandFlags) options() Options {
 	return Options{
 		Repository: f.repository,
 		AllowDirty: f.allowDirty,
+		Modules:    f.declarations,
 	}
 }
 
@@ -320,16 +325,18 @@ func (f *modulesCommandFlags) bind(command *cobra.Command) {
 }
 
 func (f *modulesCommandFlags) applyConfig(command *cobra.Command) error {
-	config, _, err := loadConfig(f.configPath, f.repository, f.defaults())
-	if err != nil || config == nil {
+	config, configPath, err := loadConfig(f.configPath, f.repository, f.defaults())
+	if err != nil {
 		return err
 	}
-
-	flags := command.Flags()
-	overrideString(flags, "repo", &f.repository, config.Repository)
-	overrideString(flags, "output", &f.output, config.Output)
-	overrideBool(flags, "allow-dirty", &f.allowDirty, config.AllowDirty)
-	return nil
+	if config != nil {
+		flags := command.Flags()
+		overrideString(flags, "repo", &f.repository, config.Repository)
+		overrideString(flags, "output", &f.output, config.Output)
+		overrideBool(flags, "allow-dirty", &f.allowDirty, config.AllowDirty)
+	}
+	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
+	return err
 }
 
 // overrideString sets target to the config value when the command defines the
