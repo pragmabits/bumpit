@@ -4,6 +4,7 @@ package gitx
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -117,6 +118,52 @@ func (c Client) CommitsSince(tag string, pathspecs ...string) ([]Commit, error) 
 	}
 
 	return commits, nil
+}
+
+// CommitOrder returns the hashes of the commits after tag, or of every commit
+// when tag is empty, oldest first and merges left out, in the order
+// CommitsSince returns them.
+func (c Client) CommitOrder(tag string) ([]string, error) {
+	revision := "HEAD"
+	if tag != "" {
+		revision = tag + "..HEAD"
+	}
+	stdout, stderr, err := c.run("rev-list", "--reverse", "--no-merges", revision)
+	if err != nil {
+		return nil, gitError("rev-list --reverse --no-merges "+revision, stderr, err)
+	}
+	return strings.Fields(stdout), nil
+}
+
+// IsAncestor reports whether the commit ancestor names is an ancestor of the
+// one descendant names, or that commit itself.
+func (c Client) IsAncestor(ancestor, descendant string) (bool, error) {
+	_, stderr, err := c.run("merge-base", "--is-ancestor", ancestor, descendant)
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return false, nil
+	default:
+		return false, gitError("merge-base --is-ancestor "+ancestor+" "+descendant, stderr, err)
+	}
+}
+
+// ValidTagName reports whether git accepts name as the name of a tag. It
+// fails when git itself fails, rather than take that for a refusal of the
+// name.
+func (c Client) ValidTagName(name string) (bool, error) {
+	_, stderr, err := c.run("check-ref-format", "refs/tags/"+name)
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return false, nil
+	default:
+		return false, gitError("check-ref-format refs/tags/"+name, stderr, err)
+	}
 }
 
 // Top returns the absolute path of the top directory of the working tree.
