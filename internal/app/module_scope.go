@@ -14,6 +14,9 @@ import (
 type moduleScope struct {
 	module  repositoryModule
 	modules []repositoryModule
+	// built holds the queries once they are built, since a plan reads its
+	// commits more than once.
+	built []commitQuery
 }
 
 // readCommit is a commit a plan reads, and how it came in.
@@ -164,56 +167,77 @@ func readOrder(client gitx.Client, tag string, read map[string]readCommit) ([]st
 // its own, so that git simplifies its history on its own, as it would if the
 // part were a module: one query joining them would follow a side branch into
 // a change a merge discarded whenever another part differs after the merge.
-// The parts are its directory, less the modules nested in it, each of its
-// paths, and the same of every module it ships.
+// The parts are its directory, less the modules nested in it, the Go code it
+// has in declared directories, each of its paths, and the same of every
+// module it ships. A path is read as the name it is, glob characters
+// included.
 func (m *moduleScope) queries() []commitQuery {
+	if m.built != nil {
+		return m.built
+	}
+
 	queries := []commitQuery{{pathspecs: ownPathspecs(m.module, m.modules)}}
 	queries = append(queries, m.goCodeQueries()...)
-	for _, entry := range m.module.readPaths() {
-		queries = append(queries, commitQuery{pathspecs: []string{topPathspec(entry)}, via: entry})
+	for _, entry := range m.module.readPaths(m.modules) {
+		queries = append(queries, commitQuery{pathspecs: []string{literalPathspec(entry)}, via: entry})
 	}
 	for _, shipped := range m.shippedModules() {
 		queries = append(queries, commitQuery{pathspecs: ownPathspecs(shipped, m.modules), via: shipped.directory, shipped: true})
-		for _, entry := range shipped.readPaths() {
-			queries = append(queries, commitQuery{pathspecs: []string{topPathspec(entry)}, via: shipped.directory, shipped: true})
+		for _, entry := range shipped.readPaths(m.modules) {
+			queries = append(queries, commitQuery{pathspecs: []string{literalPathspec(entry)}, via: shipped.directory, shipped: true})
 		}
 	}
+	m.built = queries
 	return queries
 }
+
+// goCodeLeftOut are the paths, below a directory, of the Go files the go
+// command never compiles: those under testdata, vendor, or a file or
+// directory whose name starts with _ or a dot.
+var goCodeLeftOut = []string{"**/testdata/**", "**/vendor/**", "**/_*", "**/_*/**", "**/.*", "**/.*/**"}
 
 // goCodeQueries are the queries of the Go code a Go module has in the
 // declared modules nested in it: the .go files of a declared directory are
 // still packages of the Go module, compiled and released with it, so their
 // commits are its own, with their own level, whether or not it ships the
 // rest of the directory. One query reads each outermost such directory, less
-// the Go modules nested in it, which own their files.
+// the Go modules nested in it, which own their files, and less the files no
+// build compiles.
 func (m *moduleScope) goCodeQueries() []commitQuery {
-	if m.module.declared() {
-		return nil
-	}
-
 	var queries []commitQuery
-	for _, other := range m.modules {
-		if !other.declared() || !m.holdsGoCodeOf(other) {
-			continue
-		}
+	for _, other := range m.goCodeDirectories() {
 		pathspecs := []string{":(top,glob)" + other.directory + "/**/*.go"}
 		for _, nested := range m.modules {
 			if !nested.declared() && nestedIn(nested.directory, other.directory) {
 				pathspecs = append(pathspecs, ":(top,exclude)"+nested.directory)
 			}
 		}
+		for _, leftOut := range goCodeLeftOut {
+			pathspecs = append(pathspecs, ":(top,glob,exclude)"+other.directory+"/"+leftOut)
+		}
+		for _, file := range other.goCode.neverCompiled {
+			pathspecs = append(pathspecs, ":(top,literal,exclude)"+file)
+		}
 		queries = append(queries, commitQuery{pathspecs: pathspecs})
 	}
 	return queries
 }
 
-// holdsGoCodeOf reports whether the Go code in the declared directory of
-// other belongs to this Go module: the Go module is the nearest module
-// around it, so no Go module between them owns the code, and no declared
-// module between them reads the directory already.
-func (m *moduleScope) holdsGoCodeOf(other repositoryModule) bool {
-	return encloses(m.module, other, m.modules)
+// goCodeDirectories are the declared directories whose Go code a Go module
+// compiles: those it is the nearest module around, so that no Go module
+// between them owns the code and no declared module between them reads it
+// already, and that hold such code.
+func (m *moduleScope) goCodeDirectories() []repositoryModule {
+	if m.module.declared() {
+		return nil
+	}
+	var found []repositoryModule
+	for _, other := range m.modules {
+		if other.declared() && other.goCode.held && encloses(m.module, other, m.modules) {
+			found = append(found, other)
+		}
+	}
+	return found
 }
 
 // ownPathspecs selects the files a module owns: its directory, less every
@@ -236,8 +260,8 @@ func (m *moduleScope) derivationError() error {
 		return nil
 	}
 	for _, read := range append([]repositoryModule{m.module}, m.shippedModules()...) {
-		if read.derivationError != nil {
-			return read.derivationError
+		if _, err := read.derivedPaths(m.modules); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -266,7 +290,10 @@ func (m *moduleScope) describe(plan *ReleasePlan) {
 	plan.Module = m.module.modulePath()
 	if m.module.declared() {
 		plan.Directory, plan.Paths, plan.ShippedBy = m.module.directory, m.module.paths, m.module.shippedBy
-		plan.DerivedPaths = m.module.derivedPaths
+		plan.DerivedPaths, _ = m.module.derivedPaths(m.modules)
+	}
+	for _, module := range m.goCodeDirectories() {
+		plan.GoFilesIn = append(plan.GoFilesIn, module.directory)
 	}
 	shipped := m.shippedModules()
 	for _, module := range shipped {
@@ -283,7 +310,7 @@ func (m *moduleScope) leftOut(shipped []repositoryModule) []string {
 	readers := append([]repositoryModule{m.module}, shipped...)
 	var paths []string
 	for _, reader := range readers {
-		paths = append(paths, reader.readPaths()...)
+		paths = append(paths, reader.readPaths(m.modules)...)
 	}
 
 	var left []string
@@ -339,6 +366,15 @@ func topPathspec(entry string) string {
 		return ":/"
 	}
 	return ":(top)" + entry
+}
+
+// literalPathspec is the pathspec of a path relative to the top of the
+// repository that git reads as the name it is, glob characters included.
+func literalPathspec(entry string) string {
+	if entry == "." {
+		return ":/"
+	}
+	return ":(top,literal)" + entry
 }
 
 // nestedIn reports whether the module in directory lives inside the module

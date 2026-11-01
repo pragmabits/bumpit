@@ -9,7 +9,6 @@ import (
 
 	"github.com/pragmabits/bumpit/internal/gitx"
 	"github.com/pragmabits/bumpit/internal/gomod"
-	"github.com/pragmabits/bumpit/internal/nodejs"
 )
 
 // repositoryModule is a module bumpit versions: a Go module, found by its
@@ -25,13 +24,22 @@ type repositoryModule struct {
 	// shippedBy lists the directories of the modules whose release also
 	// carries a declared module.
 	shippedBy []string
-	// derivedPaths are the paths outside its directory that a declared
-	// module reads because its package.json depends on them: the packages it
-	// depends on and the files of its workspace roots.
-	derivedPaths []string
-	// derivationError is why derivedPaths could not be found, which fails
-	// the plans that read the module.
-	derivationError error
+	// node derives the paths outside its directory that a declared module
+	// reads because of its package.json, nil for a Go module.
+	node *nodePackages
+	// goCode is the Go code of the enclosing Go module that a declared
+	// directory holds.
+	goCode goCodeInDirectory
+}
+
+// goCodeInDirectory is the Go code a declared directory holds for the Go
+// module around it, which reads its commits as its own.
+type goCodeInDirectory struct {
+	// held reports a .go file some build of the Go module compiles.
+	held bool
+	// neverCompiled lists the tracked .go files of the directory that no
+	// build compiles, which the Go module does not read.
+	neverCompiled []string
 }
 
 func goRepositoryModule(module gomod.Module) repositoryModule {
@@ -82,43 +90,25 @@ func discoverRepositoryModules(client gitx.Client, declarations []ModuleDeclarat
 	slices.SortStableFunc(modules, func(left, right repositoryModule) int {
 		return compareDirectories(left.directory, right.directory)
 	})
-
-	if err := checkDeclaredModules(client, top, modules); err != nil {
-		return nil, "", fmt.Errorf("modules: %w", err)
+	if !slices.ContainsFunc(modules, repositoryModule.declared) {
+		return modules, top, nil
 	}
-	if err := deriveNodePaths(client, top, modules); err != nil {
+
+	tracked, err := listTracked(client)
+	if err != nil {
 		return nil, "", err
 	}
-	return modules, top, nil
-}
-
-// deriveNodePaths finds the paths each declared module reads because of its
-// package.json. A module whose derivation fails keeps the error, so that only
-// the plans that read it fail. A repository that declares no module lists no
-// file for it.
-func deriveNodePaths(client gitx.Client, top string, modules []repositoryModule) error {
-	if !slices.ContainsFunc(modules, repositoryModule.declared) {
-		return nil
+	if err := checkDeclaredModules(client, tracked, top, modules); err != nil {
+		return nil, "", fmt.Errorf("modules: %w", err)
 	}
-	tracked, err := client.TrackedFiles(":/")
-	if err != nil {
-		return err
-	}
-
-	packages := nodejs.Read(top, tracked)
+	node := newNodePackages(top, tracked)
 	for index := range modules {
-		module := &modules[index]
-		if !module.declared() {
-			continue
+		if modules[index].declared() {
+			modules[index].node = node
+			modules[index].goCode = findGoCode(top, tracked, modules[index], modules)
 		}
-		inputs, err := packages.Inputs(module.directory)
-		if err != nil {
-			module.derivationError = fmt.Errorf("%s: %w", module.directory, err)
-			continue
-		}
-		module.derivedPaths = keptDerivedPaths(*module, inputs, modules)
 	}
-	return nil
+	return modules, top, nil
 }
 
 // keptDerivedPaths leaves out of inputs what the module reads already: a path
@@ -135,33 +125,83 @@ func keptDerivedPaths(module repositoryModule, inputs []string, modules []reposi
 	return kept
 }
 
+// derivedPaths are the paths a declared module reads because of its
+// package.json, and why they cannot be known when they cannot.
+func (r repositoryModule) derivedPaths(modules []repositoryModule) ([]string, error) {
+	return r.node.derive(r, modules)
+}
+
 // readPaths are the paths outside its directory that a module reads: those
-// bumpit.yaml lists, then those its package.json derives.
-func (r repositoryModule) readPaths() []string {
-	return append(slices.Clone(r.paths), r.derivedPaths...)
+// bumpit.yaml lists, then those its package.json derives. A plan checks the
+// derivation first, so that one that fails stops it.
+func (r repositoryModule) readPaths(modules []repositoryModule) []string {
+	derived, _ := r.derivedPaths(modules)
+	return append(slices.Clone(r.paths), derived...)
+}
+
+// findGoCode tells which Go code the declared directory of module holds for
+// the Go module around it: its .go files that lie in no nested Go module and
+// in no directory the go command leaves out, and among them those no build
+// compiles.
+func findGoCode(top string, tracked trackedTree, module repositoryModule, modules []repositoryModule) goCodeInDirectory {
+	enclosing := deepestModule(module.directory, modules, isGoModule)
+	var found goCodeInDirectory
+	if enclosing == nil || module.directory == "." {
+		return found
+	}
+	for _, file := range tracked.files {
+		if !goFileOf(file, module, *enclosing, modules) {
+			continue
+		}
+		if gomod.NeverCompiled(filepath.Join(top, filepath.FromSlash(file))) {
+			found.neverCompiled = append(found.neverCompiled, file)
+			continue
+		}
+		found.held = true
+	}
+	return found
+}
+
+// goFileOf reports whether file is a .go file of the declared directory of
+// module that belongs to the Go module enclosing, rather than to a Go module
+// nested in the directory, and that the go command does not leave out by its
+// name or the name of a directory above it.
+func goFileOf(file string, module, enclosing repositoryModule, modules []repositoryModule) bool {
+	if !strings.HasSuffix(file, ".go") || !within(file, module.directory) {
+		return false
+	}
+	owner := deepestModule(file, modules, isGoModule)
+	if owner == nil || owner.directory != enclosing.directory {
+		return false
+	}
+	return !gomod.Ignored(path.Dir(file)) && !gomod.Ignored(path.Base(file))
+}
+
+func isGoModule(module repositoryModule) bool {
+	return !module.declared()
 }
 
 // checkDeclaredModules refuses a declared module the repository contradicts,
 // and one that Go code ships while bumpit.yaml does not say so.
-func checkDeclaredModules(client gitx.Client, top string, modules []repositoryModule) error {
+func checkDeclaredModules(client gitx.Client, tracked trackedTree, top string, modules []repositoryModule) error {
 	for _, module := range modules {
 		if !module.declared() {
 			continue
 		}
-		if err := checkDeclaredModule(client, module, modules); err != nil {
+		if err := checkDeclaredModule(client, tracked, module, modules); err != nil {
 			return fmt.Errorf("%s: %w", module.directory, err)
 		}
 	}
-	return checkGoShipping(client, top, modules)
+	return checkGoShipping(tracked, top, modules)
 }
 
-func checkDeclaredModule(client gitx.Client, module repositoryModule, modules []repositoryModule) error {
+func checkDeclaredModule(client gitx.Client, tracked trackedTree, module repositoryModule, modules []repositoryModule) error {
 	if slices.ContainsFunc(modules, func(other repositoryModule) bool { return !other.declared() && other.directory == module.directory }) {
 		return fmt.Errorf("the directory holds a go.mod: it is a Go module, versioned by its go.mod")
 	}
 	for _, entry := range append([]string{module.directory}, module.paths...) {
-		if err := checkTracked(client, entry); err != nil {
-			return err
+		if !tracked.holds(entry) {
+			return fmt.Errorf("%s matches no tracked file", entry)
 		}
 	}
 	for _, entry := range module.paths {
@@ -190,20 +230,6 @@ func checkCarriers(module repositoryModule, modules []repositoryModule) error {
 	return nil
 }
 
-// checkTracked refuses a path of a declaration that names no tracked file: a
-// misspelt path would otherwise read no commit, and the module would never
-// be released for it.
-func checkTracked(client gitx.Client, entry string) error {
-	files, err := client.TrackedFiles(topPathspec(entry))
-	if err != nil {
-		return err
-	}
-	if len(files) == 0 {
-		return fmt.Errorf("%s matches no tracked file", entry)
-	}
-	return nil
-}
-
 // insideNestedModule reports whether entry lies in a module nested in module,
 // whose files module does not read unless its paths name them.
 func insideNestedModule(entry string, module repositoryModule, modules []repositoryModule) bool {
@@ -218,6 +244,9 @@ func insideNestedModule(entry string, module repositoryModule, modules []reposit
 // version of both. It also refuses a prefix git takes in no tag name.
 func checkTagPrefix(client gitx.Client, module repositoryModule, modules []repositoryModule) error {
 	prefix := module.tagPrefix
+	if strings.HasPrefix(prefix, "-") {
+		return fmt.Errorf("its tag prefix %s starts with -, which git takes for an option", prefix)
+	}
 	for _, other := range modules {
 		switch {
 		case other.directory == module.directory:
@@ -264,7 +293,7 @@ func isVersionCharacter(character rune) bool {
 // directory are not shipping: they are the Go module's own code, which it
 // reads as its own. No pattern of a nested Go module leaves it, so none ships
 // a declared root module.
-func checkGoShipping(client gitx.Client, top string, modules []repositoryModule) error {
+func checkGoShipping(tracked trackedTree, top string, modules []repositoryModule) error {
 	declared := slices.DeleteFunc(slices.Clone(modules), func(module repositoryModule) bool {
 		return !module.declared() || module.directory == "."
 	})
@@ -272,11 +301,10 @@ func checkGoShipping(client gitx.Client, top string, modules []repositoryModule)
 		return nil
 	}
 
-	files, err := client.TrackedFiles(":(top,glob)**/*.go")
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
+	for _, file := range tracked.files {
+		if !strings.HasSuffix(file, ".go") {
+			continue
+		}
 		if err := checkGoFile(top, file, declared, modules); err != nil {
 			return err
 		}
@@ -286,17 +314,17 @@ func checkGoShipping(client gitx.Client, top string, modules []repositoryModule)
 
 // checkGoFile checks the declared modules that the //go:embed patterns of one
 // Go file can reach: those its package lies in, and those under the
-// directory of its package. A test file ships nothing.
+// directory of its package, when no nested Go module stands between them,
+// since the go command embeds no file of another module. A test file ships
+// nothing.
 func checkGoFile(top, file string, declared, modules []repositoryModule) error {
 	packageDirectory := path.Dir(file)
-	goModule := deepestModule(file, modules, func(module repositoryModule) bool { return !module.declared() })
+	goModule := deepestModule(file, modules, isGoModule)
 	if strings.HasSuffix(file, "_test.go") || gomod.Ignored(packageDirectory) || goModule == nil {
 		return nil
 	}
 
-	reachable := slices.DeleteFunc(slices.Clone(declared), func(module repositoryModule) bool {
-		return !within(packageDirectory, module.directory) && !within(module.directory, packageDirectory)
-	})
+	reachable := reachableModules(packageDirectory, *goModule, declared, modules)
 	if len(reachable) == 0 {
 		return nil
 	}
@@ -310,6 +338,18 @@ func checkGoFile(top, file string, declared, modules []repositoryModule) error {
 		}
 	}
 	return nil
+}
+
+// reachableModules lists, among declared, the modules the //go:embed
+// patterns of a package of goModule in packageDirectory can reach: those the
+// package lies in or that lie under it, with goModule the nearest Go module
+// around them.
+func reachableModules(packageDirectory string, goModule repositoryModule, declared, modules []repositoryModule) []repositoryModule {
+	return slices.DeleteFunc(slices.Clone(declared), func(module repositoryModule) bool {
+		nearest := deepestModule(module.directory, modules, isGoModule)
+		sameGoModule := nearest != nil && nearest.directory == goModule.directory
+		return !sameGoModule || !within(packageDirectory, module.directory) && !within(module.directory, packageDirectory)
+	})
 }
 
 // checkShipping refuses the Go file of goModule when one of its //go:embed

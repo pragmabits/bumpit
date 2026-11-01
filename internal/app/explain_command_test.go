@@ -73,6 +73,7 @@ func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
 		NextTag:     "v0.2.0",
 		HighestBump: "minor",
 		Module:      "example.com/repository",
+		GoFilesIn:   []string{"docs"},
 		Ships:       []string{"web/homepage"},
 		LeavesOut:   []string{"docs"},
 	}
@@ -85,7 +86,7 @@ func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
 			"Module: web/homepage (declared in bumpit.yaml)\nPaths: deploy/homepage\nPaths from the Node packages: web/brand, web/package.json\nShipped by: .\nCurrent tag:",
 			"- abc1234 fix: sharpen the logo [patch: fix commit] via web/brand\n",
 		}},
-		{plan: shipper, lines: []string{"Module: example.com/repository\nShips: web/homepage\nLeaves out: docs\nCurrent tag:"}},
+		{plan: shipper, lines: []string{"Module: example.com/repository\nReads the Go files in: docs\nShips: web/homepage\nLeaves out: docs\nCurrent tag:"}},
 	}
 	for _, testCase := range cases {
 		var text strings.Builder

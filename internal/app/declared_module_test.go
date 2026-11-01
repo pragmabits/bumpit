@@ -399,3 +399,45 @@ func TestBuildReleasePlanContinuesDeclaredPreRelease(t *testing.T) {
 		t.Fatalf("a fix through a path after the prerelease gave %s, want homepage/v1.1.0-beta.2", plan.NextTag)
 	}
 }
+
+// TestBuildReleasePlanLeavesOutGoFilesNoBuildCompiles covers the .go files of
+// a declared directory that no build compiles, a file marked //go:build
+// ignore and a file under testdata: they are no code of the Go module, which
+// does not read them as its own, and explain names the declared directories
+// whose Go files it reads.
+func TestBuildReleasePlanLeavesOutGoFilesNoBuildCompiles(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitGoMod(t, repositoryPath, ".", "example.com/repository", "feat: initial library")
+	commitNewFile(t, repositoryPath, "web/handler.go", "package web\n", "feat: serve the site")
+	commitNewFile(t, repositoryPath, "web/serve.go", "//go:build ignore\n\npackage main\n", "feat: add a development server")
+	commitNewFile(t, repositoryPath, "web/testdata/fixture.go", "package fixture\n", "test: add a fixture")
+	runGit(t, repositoryPath, "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+	commitFile(t, repositoryPath, "web/serve.go", "//go:build ignore\n\npackage main\n\nfunc main() {}\n", "feat!: rework the development server")
+	commitFile(t, repositoryPath, "web/testdata/fixture.go", "package fixture\n\nvar x = 1\n", "fix: fix the fixture")
+
+	declarations := []ModuleDeclaration{declare("web", "", nil)}
+	root := planOf(t, Options{Repository: repositoryPath, Modules: declarations})
+	if root.HasRelease || !slices.Equal(root.GoFilesIn, []string{"web"}) {
+		t.Fatalf("files no build compiles released the root module as %s; Go files in %q", root.NextTag, root.GoFilesIn)
+	}
+}
+
+// TestBuildReleasePlanReadsDerivedPathsLiterally covers a derived path whose
+// name holds a glob character: git reads it as the name it is.
+func TestBuildReleasePlanReadsDerivedPathsLiterally(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitNewFile(t, repositoryPath, "web/site/package.json", `{"name": "site", "dependencies": {"legacy": "file:../[legacy]"}}`, "feat: add the site")
+	commitNewFile(t, repositoryPath, "web/[legacy]/package.json", `{"name": "legacy"}`, "feat: add the legacy package")
+	commitNewFile(t, repositoryPath, "web/l", "notes", "docs: write notes")
+	runGit(t, repositoryPath, "tag", "-a", "web/site/v0.1.0", "-m", "Release web/site/v0.1.0")
+	commitFile(t, repositoryPath, "web/l", "more", "fix: fix the notes")
+
+	declarations := []ModuleDeclaration{declare("web/site", "", nil)}
+	if site := planOf(t, Options{Repository: repositoryPath, Module: "web/site", Modules: declarations}); site.HasRelease {
+		t.Fatalf("a commit to web/l, which the glob web/[legacy] would match, released the site as %s", site.NextTag)
+	}
+}

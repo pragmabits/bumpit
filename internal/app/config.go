@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/pragmabits/bumpit/internal/gitx"
 	"github.com/pragmabits/bumpit/internal/semver"
 	"github.com/spf13/viper"
@@ -126,17 +127,18 @@ func configCandidatePaths(repository string) []string {
 // The declarations describe the repository, as its go.mod files do, so a run
 // from a subdirectory reads them too, and a config found in a subdirectory
 // cannot declare others. config is the config the run loaded, at configPath,
-// nil when it loaded none.
+// nil when it loaded none. Outside a repository there is none, and the
+// command reports that repository is none.
 func readDeclarations(explicit bool, repository string, config *Config, configPath string) ([]ModuleDeclaration, error) {
 	if explicit && config != nil && config.Modules != nil {
 		return config.Modules, nil
 	}
 
 	top, topConfig, err := findTopConfig(repository)
-	if err != nil {
+	if err != nil || top == "" {
 		return nil, err
 	}
-	if !explicit && config != nil && config.Modules != nil && !sameFile(configPath, topConfig) {
+	if !explicit && config != nil && len(config.Modules) > 0 && !sameFile(configPath, topConfig) {
 		return nil, fmt.Errorf("%s declares modules, which bumpit reads from the bumpit.yaml at the top of the repository: move them to %s", configPath, filepath.Join(top, "bumpit.yaml"))
 	}
 	return topDeclarations(topConfig, config, configPath)
@@ -158,7 +160,9 @@ func findTopConfig(repository string) (string, string, error) {
 }
 
 // topDeclarations reads the modules the config at topConfig declares, from
-// config when the run loaded that file already.
+// config when the run loaded that file already. Of a config the run did not
+// load, it reads and checks the modules key alone: the other keys are not
+// the run's, so a value one of them could not take does not stop it.
 func topDeclarations(topConfig string, config *Config, configPath string) ([]ModuleDeclaration, error) {
 	switch {
 	case topConfig == "":
@@ -167,11 +171,20 @@ func topDeclarations(topConfig string, config *Config, configPath string) ([]Mod
 		return config.Modules, nil
 	}
 
-	loaded, _, err := LoadConfig(topConfig, Config{Repository: ".", Output: "text"})
+	configReader := viper.New()
+	configReader.SetConfigFile(topConfig)
+	var declarations []ModuleDeclaration
+	err := configReader.ReadInConfig()
+	if err == nil {
+		err = configReader.UnmarshalKey("modules", &declarations, func(decoder *mapstructure.DecoderConfig) { decoder.ErrorUnused = true })
+	}
+	if err == nil {
+		err = validateModuleDeclarations(declarations)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read the modules of %s: %w", topConfig, err)
 	}
-	return loaded.Modules, nil
+	return declarations, nil
 }
 
 func sameFile(left, right string) bool {

@@ -79,6 +79,9 @@ type ReleasePlan struct {
 	// package.json: the packages it depends on and the files of its
 	// workspace roots.
 	DerivedPaths []string `json:"derived_paths,omitempty"`
+	// GoFilesIn lists the declared directories whose .go files a Go module
+	// reads as its own code, though it leaves the rest of them out.
+	GoFilesIn []string `json:"go_files_in,omitempty"`
 	// LeavesOut lists the declared modules nested in the module, whose
 	// commits it does not read.
 	LeavesOut        []string `json:"leaves_out,omitempty"`
@@ -284,8 +287,12 @@ func commitsAfterCurrent(client gitx.Client, state releaseState, read []readComm
 	if err != nil {
 		return nil, err
 	}
+	after := make(map[string]bool, len(hashes))
+	for _, hash := range hashes {
+		after[hash] = true
+	}
 	return slices.DeleteFunc(slices.Clone(read), func(commit readCommit) bool {
-		return !slices.Contains(hashes, commit.Hash)
+		return !after[commit.Hash]
 	}), nil
 }
 

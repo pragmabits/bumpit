@@ -30,6 +30,7 @@ func TestDiscoveryRefusesModuleDeclarations(t *testing.T) {
 		{name: "a prefix continued by a version", declarations: []ModuleDeclaration{declare("web/homepage", "v1", nil)}, message: "modules: web/homepage: its tag prefix v1 continues v, the one of ., with what can start a version"},
 		{name: "an invalid tag name", declarations: []ModuleDeclaration{declare("web/homepage", "home..page/v", nil)}, message: "modules: web/homepage: its tag prefix home..page/v does not make a valid tag name"},
 		{name: "a declared . beside a root go.mod", declarations: []ModuleDeclaration{declare(".", "", nil)}, message: "modules: .: the directory holds a go.mod"},
+		{name: "a tag prefix git takes for an option", declarations: []ModuleDeclaration{declare("web/homepage", "-site/v", nil)}, message: "modules: web/homepage: its tag prefix -site/v starts with -, which git takes for an option"},
 		{name: "a cycle of carriers", declarations: []ModuleDeclaration{declare("web/brand", "brand/v", nil, "web/homepage"), declare("web/homepage", "", nil, "web/brand")}, message: "modules: web/brand: shippedBy forms a cycle: through web/homepage, the module carries itself"},
 	}
 	for _, testCase := range cases {
@@ -140,5 +141,24 @@ func TestDiscoveryReadsGoFilesNoBuildCompiles(t *testing.T) {
 	declarations := []ModuleDeclaration{declare("web/homepage", "", nil)}
 	if _, err := BuildReleasePlan(Options{Repository: repositoryPath, AllowDirty: true, Modules: declarations}); err != nil {
 		t.Fatalf("BuildReleasePlan returned error: %v", err)
+	}
+}
+
+// TestDiscoveryStopsEmbedsAtNestedGoModules covers a //go:embed of a
+// directory that holds a nested Go module: the go command does not embed
+// the nested module's files, so the declared module inside it is not
+// shipped by the embedding module.
+func TestDiscoveryStopsEmbedsAtNestedGoModules(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initHomepageRepository(t)
+	commitNewFile(t, repositoryPath, "cmd/templates/page.html", "page", "feat: add a template")
+	commitNewFile(t, repositoryPath, "main.go", embedSource("cmd"), "feat: embed the templates")
+	commitGoMod(t, repositoryPath, "cmd/tool", "example.com/repository/cmd/tool", "feat(tool): add the tool")
+	commitNewFile(t, repositoryPath, "cmd/tool/ui/index.html", "ui", "feat(tool): add the interface")
+
+	declarations := []ModuleDeclaration{declare("cmd/tool/ui", "", nil, "cmd/tool")}
+	if _, err := BuildReleasePlan(Options{Repository: repositoryPath, Modules: declarations}); err != nil {
+		t.Fatalf("an embed that stops at the nested Go module was refused: %v", err)
 	}
 }

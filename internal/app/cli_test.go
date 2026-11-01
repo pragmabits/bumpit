@@ -312,6 +312,11 @@ func TestApplyConfigReadsDeclarationsAtTheTop(t *testing.T) {
 		}
 	}
 
+	writeConfig(t, filepath.Join(web, "bumpit.yaml"), "modules: []\n")
+	if flags, err := applyReleaseConfig(map[string]string{"repo": web}); err != nil || len(flags.declarations) != 1 {
+		t.Errorf("a config of a subdirectory with an empty modules: error = %v, declarations %v", err, flags.declarations)
+	}
+
 	writeConfig(t, filepath.Join(web, "bumpit.yaml"), "modules:\n  - directory: web/homepage\n    shippedBy: []\n")
 	_, err := applyReleaseConfig(map[string]string{"repo": web})
 	want := filepath.Join(web, "bumpit.yaml") + " declares modules, which bumpit reads from the bumpit.yaml at the top of the repository: move them to " + filepath.Join(repositoryPath, "bumpit.yaml")
@@ -346,5 +351,39 @@ func writeConfig(t *testing.T, path, content string) {
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
+	}
+}
+
+// TestApplyConfigReadsOnlyTheModulesOfTheTop covers the config at the top
+// that a run from a subdirectory reads only for its modules: its other keys,
+// valid or not, are not the run's, and a directory that is no repository
+// reports that it is none rather than where modules belong.
+func TestApplyConfigReadsOnlyTheModulesOfTheTop(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitNewFile(t, repositoryPath, "sub/notes.txt", "notes", "docs: write notes")
+	sub := filepath.Join(repositoryPath, "sub")
+	writeConfig(t, filepath.Join(sub, "bumpit.yaml"), "tagMessage: Release\n")
+
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "repository: ./missing\noutput: xml\n")
+	if flags, err := applyReleaseConfig(map[string]string{"repo": sub}); err != nil || flags.declarations != nil {
+		t.Errorf("a top config with invalid keys and no modules: error = %v, declarations %v", err, flags.declarations)
+	}
+
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "output: xml\nmodules:\n  - directory: sub\n    shippedBy: []\n")
+	if flags, err := applyReleaseConfig(map[string]string{"repo": sub}); err != nil || len(flags.declarations) != 1 {
+		t.Errorf("a top config with an invalid key and modules: error = %v, declarations %v", err, flags.declarations)
+	}
+
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directory: sub\n")
+	if _, err := applyReleaseConfig(map[string]string{"repo": sub}); err == nil || !strings.Contains(err.Error(), "shippedBy is required") {
+		t.Errorf("a top config with an invalid declaration: error = %v", err)
+	}
+
+	outside := t.TempDir()
+	writeConfig(t, filepath.Join(outside, "bumpit.yaml"), "modules:\n  - directory: web\n    shippedBy: []\n")
+	if _, err := applyReleaseConfig(map[string]string{"repo": outside}); err != nil {
+		t.Errorf("a directory that is no repository: applyConfig error = %v, want none, so that the command reports it", err)
 	}
 }

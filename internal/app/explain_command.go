@@ -100,6 +100,7 @@ func writeModuleLines(text *strings.Builder, plan ReleasePlan) {
 		{label: "Paths", values: plan.Paths},
 		{label: "Paths from the Node packages", values: plan.DerivedPaths},
 		{label: "Shipped by", values: plan.ShippedBy},
+		{label: "Reads the Go files in", values: plan.GoFilesIn},
 		{label: "Ships", values: plan.Ships},
 		{label: "Leaves out", values: plan.LeavesOut},
 	}
