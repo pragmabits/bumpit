@@ -31,6 +31,10 @@ func TestPatternReaches(t *testing.T) {
 		{name: "into a nested module", packageDirectory: ".", pattern: "web/homepage/admin/dist", directory: "web/homepage", nested: []string{"web/homepage/admin"}, want: false},
 		{name: "a glob that may leave the nested module", packageDirectory: ".", pattern: "web/homepage/*/dist", directory: "web/homepage", nested: []string{"web/homepage/admin"}, want: true},
 		{name: "beside a nested module", packageDirectory: ".", pattern: "web/homepage/dist", directory: "web/homepage", nested: []string{"web/homepage/admin"}, want: true},
+		{name: "a directory starting with _ under the pattern", packageDirectory: ".", pattern: "web", directory: "web/_site", want: false},
+		{name: "a directory starting with . under the pattern", packageDirectory: ".", pattern: "*", directory: "web/.well-known", want: false},
+		{name: "a directory starting with _ under an all: pattern", packageDirectory: ".", pattern: "all:web", directory: "web/_site", want: true},
+		{name: "a directory starting with _ the pattern names", packageDirectory: ".", pattern: "web/_site", directory: "web/_site", want: true},
 	}
 	for _, testCase := range cases {
 		got := PatternReaches(testCase.packageDirectory, testCase.pattern, testCase.directory, testCase.nested)
@@ -93,6 +97,28 @@ func TestFileEmbeds(t *testing.T) {
 		}
 		if !slices.Equal(got, testCase.want) {
 			t.Errorf("FileEmbeds(%s) = %q, want %q", testCase.file, got, testCase.want)
+		}
+	}
+}
+
+func TestNeverCompiled(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	files := map[string]string{
+		"plain.go":    "package server\n",
+		"linux.go":    "//go:build linux\n\npackage server\n",
+		"ignored.go":  "//go:build ignore\n\npackage main\n",
+		"template.go": "package {{.Package}}\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+	}
+	for name, want := range map[string]bool{"plain.go": false, "linux.go": false, "ignored.go": true, "template.go": true, "deleted.go": false} {
+		if got := NeverCompiled(filepath.Join(directory, name)); got != want {
+			t.Errorf("NeverCompiled(%s) = %v, want %v", name, got, want)
 		}
 	}
 }

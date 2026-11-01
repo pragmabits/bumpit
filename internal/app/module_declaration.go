@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"path"
 	"strings"
-
-	"github.com/pragmabits/bumpit/internal/gomod"
 )
 
 // ModuleDeclaration is a module of the repository that has no go.mod, as
@@ -92,8 +90,8 @@ func checkModulePath(key, value string) error {
 		return fmt.Errorf("%s %q leaves the repository", key, value)
 	case strings.HasPrefix(value, ":"):
 		return fmt.Errorf("%s %q starts with :, which git reads as pathspec magic", key, value)
-	case strings.ContainsAny(value, gomod.GlobMetacharacters):
-		return fmt.Errorf("%s %q holds a glob character (%s), which a module path cannot take", key, value, gomod.GlobMetacharacters)
+	case strings.ContainsAny(value, globMetacharacters):
+		return fmt.Errorf("%s %q holds a glob character (%s), which a module path cannot take", key, value, globMetacharacters)
 	default:
 		return nil
 	}
@@ -101,8 +99,8 @@ func checkModulePath(key, value string) error {
 
 func checkTagPrefixText(declaration ModuleDeclaration) error {
 	switch prefix := declaration.TagPrefix; {
-	case strings.ContainsAny(prefix, gomod.GlobMetacharacters):
-		return fmt.Errorf("tagPrefix %q holds a glob character (%s), which would read the tags of other modules", prefix, gomod.GlobMetacharacters)
+	case strings.ContainsAny(prefix, globMetacharacters):
+		return fmt.Errorf("tagPrefix %q holds a glob character (%s), which would read the tags of other modules", prefix, globMetacharacters)
 	case prefix == "v" && declaration.Directory != ".":
 		return fmt.Errorf("tagPrefix v is the root module's; only the module in . takes it")
 	default:

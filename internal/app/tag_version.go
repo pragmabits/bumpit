@@ -3,15 +3,19 @@ package app
 import (
 	"strings"
 
-	"github.com/pragmabits/bumpit/internal/gomod"
 	"github.com/pragmabits/bumpit/internal/semver"
 )
+
+// globMetacharacters are the characters that open a wildcard in a git glob,
+// as a tag pattern or a pathspec is: the literal head of a pattern ends at the
+// first one.
+const globMetacharacters = `*?[\`
 
 // tagPrefix is the text a tag pattern fixes before its first wildcard, which
 // every tag the pattern matches starts with: "v" for "v*", "release-" for
 // "release-*", "cmd/tool/v" for "cmd/tool/v*".
 func tagPrefix(pattern string) string {
-	if index := strings.IndexAny(pattern, gomod.GlobMetacharacters); index >= 0 {
+	if index := strings.IndexAny(pattern, globMetacharacters); index >= 0 {
 		return pattern[:index]
 	}
 	return pattern

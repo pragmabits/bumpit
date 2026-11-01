@@ -16,10 +16,10 @@ import (
 	"strings"
 )
 
-// GlobMetacharacters are the characters that open a wildcard in a pattern,
-// whether path.Match reads it, as for a //go:embed pattern, or git does, as
-// for a tag pattern: the literal head of a pattern ends at the first one.
-const GlobMetacharacters = `*?[\`
+// wildcards are the characters that open a wildcard in a //go:embed pattern,
+// which the go command reads with path.Match: the literal head of a pattern
+// ends at the first one.
+const wildcards = `*?[\`
 
 // Embed is one pattern of a //go:embed directive and where it is written.
 type Embed struct {
@@ -68,6 +68,19 @@ func FileEmbeds(file string) ([]Embed, error) {
 	}
 	slices.SortFunc(embeds, compareEmbeds)
 	return embeds, nil
+}
+
+// NeverCompiled reports whether no build compiles the Go file at file: its
+// build constraint needs the ignore tag, which by convention no build sets,
+// as //go:build ignore does, or the go command cannot read its package
+// clause. A file that cannot be opened, such as a tracked file deleted from
+// the working tree, is not known to be left out, and is reported compiled.
+func NeverCompiled(file string) bool {
+	if _, err := os.Stat(file); err != nil {
+		return false
+	}
+	built, err := everBuilt(file)
+	return err != nil || !built
 }
 
 // everBuilt reports whether some build compiles the Go file: whether its
@@ -163,10 +176,12 @@ func compareEmbeds(left, right Embed) int {
 // package in packageDirectory, can embed a file of directory. Both
 // directories are slash separated and relative to the repository top, and
 // directory is not ".". The pattern reaches the directory when it names the
-// directory or an ancestor, which is then embedded whole, or a path inside
-// it, unless that path lies in one of nested, the directories of the modules
-// nested in directory, whose files are theirs. When it cannot tell, as with a
-// wildcard after the directory, it answers that the pattern reaches.
+// directory or an ancestor, which is then embedded whole but for the files
+// below it whose names start with . or _, unless the pattern starts with
+// all:, or when it names a path inside the directory, unless that path lies
+// in one of nested, the directories of the modules nested in directory, whose
+// files are theirs. When it cannot tell, as with a wildcard after the
+// directory, it answers that the pattern reaches.
 func PatternReaches(packageDirectory, pattern, directory string, nested []string) bool {
 	full := strings.TrimPrefix(pattern, "all:")
 	if packageDirectory != "." {
@@ -181,7 +196,8 @@ func PatternReaches(packageDirectory, pattern, directory string, nested []string
 		}
 	}
 	if len(patternElements) <= len(directoryElements) {
-		return true
+		embedsHidden := strings.HasPrefix(pattern, "all:")
+		return embedsHidden || !slices.ContainsFunc(directoryElements[len(patternElements):], hiddenElement)
 	}
 
 	literal := literalHead(patternElements)
@@ -201,7 +217,7 @@ func elementMatches(patternElement, pathElement string) bool {
 // literalHead joins the leading elements of a pattern that hold no wildcard.
 func literalHead(elements []string) string {
 	end := slices.IndexFunc(elements, func(element string) bool {
-		return strings.ContainsAny(element, GlobMetacharacters)
+		return strings.ContainsAny(element, wildcards)
 	})
 	if end < 0 {
 		end = len(elements)
