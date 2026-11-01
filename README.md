@@ -1,6 +1,6 @@
 # bumpit
 
-`bumpit` is a local-first Go CLI that reads the commits after the last semantic version tag and computes the next version using Conventional Commits and SemVer rules. In a Go repository it versions each module on its own, as the Go modules reference lays them out.
+`bumpit` is a local-first Go CLI that reads the commits after the last semantic version tag and computes the next version using Conventional Commits and SemVer rules. In a Go repository it versions each module on its own, as the Go modules reference lays them out, and a part of the repository with no `go.mod`, such as a static site or a Helm chart, is versioned the same way once `bumpit.yaml` declares it.
 
 ## Why
 
@@ -73,8 +73,8 @@ Every flag has a short form, and a letter always means the same thing across com
 | --- | --- | --- | --- |
 | `-c` | `--config` | `latest`, `next`, `explain`, `tag`, `modules` | path to `bumpit.yaml` |
 | `-r` | `--repo` | `latest`, `next`, `explain`, `tag`, `modules` | path to the git repository |
-| `-t` | `--match` | `latest`, `next`, `explain`, `tag` | tag pattern used to filter candidate tags; default `v*`, or the Go module's tag prefix |
-| `-g` | `--module` | `latest`, `next`, `explain`, `tag` | Go module directory to version, relative to `--repo` |
+| `-t` | `--match` | `latest`, `next`, `explain`, `tag` | tag pattern used to filter candidate tags; default `v*`, or the module's tag prefix |
+| `-g` | `--module` | `latest`, `next`, `explain`, `tag` | directory of the module to version, relative to `--repo`: a Go module, or one `bumpit.yaml` declares |
 | `-o` | `--output` | `latest`, `next`, `explain`, `modules` | output format: `text` or `json` |
 | `-a` | `--all` | `latest` | consider every tag, not only the ones reachable from `HEAD` |
 | `-n` | `--no-prefix` | `latest` | print the bare version instead of the tag |
@@ -84,7 +84,7 @@ Every flag has a short form, and a letter always means the same thing across com
 | `-P` | `--promote` | `next`, `explain`, `tag` | promote the current prerelease to a final release |
 | `-V` | `--release-as` | `next`, `explain`, `tag` | release this exact version, the only way to reach `1.0.0` |
 | `-m` | `--message` | `tag` | annotated tag message |
-| `-M` | `--all-modules` | `tag` | tag every Go module that has a release, holding the ones that require an older version of another module |
+| `-M` | `--all-modules` | `tag` | tag every module that has a release, Go modules and the ones `bumpit.yaml` declares, holding the Go modules that require an older version of another module |
 | `-v` | `--version` | `bumpit` itself | print the version, as `bumpit version` does |
 
 `-t` carries the tag pattern instead of `-m` so that `-m` can keep its usual meaning from `git tag -m` and `git commit -m`. `-p` and `-P` are the mutually exclusive prerelease pair, and `-V` excludes both. `-g` sets the tag pattern from the module, so it excludes `-t`. `-M` tags every module at its own next version, so it excludes `-g`, `-t`, `-V`, `-p` and `-P`. `-a` is not used for it because `latest -a` already means every tag, and `git tag -a` means an annotated tag. `-h` is reserved by the CLI for help.
@@ -144,14 +144,14 @@ A tag is a prefix followed by a semantic version, and only the version is SemVer
 
 A pattern that opens with a wildcard fixes no prefix, and then a tag may carry the customary `v` or none. The version after the prefix is read strictly: `v01.2.3` and `v1.0.0-rc.01` are not versions. `explain` lists such tags as ignored, with the reason, and when every matching tag is one of them bumpit stops instead of planning a first release.
 
-A pattern reads every commit, whatever files it touches. In a Go repository, `--module` is the way to version one module from its own commits.
+A pattern reads every commit, whatever files it touches. `--module` is the way to version one module from its own commits: a Go module, or one `bumpit.yaml` declares.
 
 ## Go modules
 
 In a repository with a `go.mod`, bumpit versions one module at a time, following the [Go modules reference](https://go.dev/ref/mod). With neither `--module` nor `--match` it versions the root module, when the repository has a `go.mod` at its top, and `--module <dir>` names any module, relative to `--repo`:
 
-- **Tags.** The tag prefix is the module subdirectory, without the major version suffix, followed by `v`: the root module is tagged `v1.2.3`, the module in `cmd/tool` is tagged `cmd/tool/v1.2.3`, and a module in `sub/v2` whose path is `example.com/repository/sub/v2` is tagged `sub/v2.0.0`.
-- **Commits.** Only the commits touching the module's directory count, less the modules nested in it: a commit under `cmd/tool` does not release the root module.
+- **Tags.** The tag prefix is the module subdirectory, without the major version suffix, followed by `v`: the root module is tagged `v1.2.3`, the module in `cmd/tool` is tagged `cmd/tool/v1.2.3`, and a module in `sub/v2` whose path is `example.com/repository/sub/v2` is tagged `sub/v2.0.0`. A tag that is the prefix of another module followed by a version is that module's: the root module's `v*` also matches `vite/v0.1.0`, the version of a module in `vite`, and does not read it, neither as a version nor as an ignored tag.
+- **Commits.** Only the commits touching the module's directory count, less the modules nested in it, Go modules and the ones `bumpit.yaml` declares: a commit under `cmd/tool` does not release the root module.
 - **Major version.** The next version must fit the module path. A path without a major version suffix takes `v0` and `v1` only, and a path ending in `/vN` takes `vN` only. A breaking change in `v1.x` of `example.com/repository` is an error until the `go.mod` says `module example.com/repository/v2`, and a `go.mod` moved to `/v2` in a commit that does not mark a breaking change is an error too. The go command refuses any other tag of a module that has a `go.mod`, so it would be a version nobody can require.
 - **Dependents.** `explain` lists the modules of the repository that require the module at a version below the next one. bumpit reports them and changes no `go.mod`: release the module, then update and release its dependents.
 
@@ -195,6 +195,50 @@ cmd/tool  held: requires example.com/repository v0.1.0, below v0.2.0; update cmd
 - **Exit code.** The command fails when it creates no tag, as `bumpit tag` does.
 - **Flags.** `--module`, `--match`, `--release-as`, `--pre` and `--promote` pick one module or one version, so they cannot be combined with it, whether given on the command line or set in `bumpit.yaml`. `--start-version` applies to every module without tags and must be the bare version, such as `0.5.0`, since each module has its own prefix. `--message` and `tagMessage` go on every tag; without them each tag gets `Release <tag>`.
 
+## Modules without a go.mod
+
+A repository often ships parts that are released on their own but are not Go modules: a static site built into an image of its own, a frontend package, a Helm chart. `bumpit.yaml` declares them under `modules`, and bumpit versions each one as it versions a Go module, from its own tags and its own commits: `--module` names it, `bumpit modules` lists it, and `bumpit tag --all-modules` tags it at its own next version.
+
+```yaml
+modules:
+  - directory: web/homepage      # relative to the top of the repository
+    tagPrefix: homepage/v        # default: web/homepage/v, or v for .
+    paths:                       # what it is built from outside its directory
+      - web/brand
+      - web/pnpm-lock.yaml
+      - deploy/homepage
+    shippedBy: []                # required: the modules whose release also carries it
+```
+
+- **Tags.** Every tag of the module starts with `tagPrefix`, its `v` included: `homepage/v0.1.0`. Without one, the prefix is the directory followed by `/v`, as for a Go module in that directory.
+- **Commits.** A file belongs to the deepest module whose directory holds it, Go or declared, and a module reads the commits that touch its own files. The root module therefore no longer reads `web/homepage`, as it does not read a nested Go module. A declared module also reads the commits of each of its `paths`, whoever owns them: a `fix:` in `web/brand` releases the root module, which owns it, and the homepage, which is built from it. A path may name a module nested in the directory, which is then read too. The `.go` files of a Go module that lie in a declared directory stay the Go module's code: their commits are its own, at their own level, whatever `shippedBy` says.
+- **Shipped modules.** A module that `shippedBy` names carries the declared module in its release, so it reads every commit the declared module reads, and those of the modules that one carries in turn. A breaking change that reaches it only that way is a minor change for it: the contract it breaks is the carried module's, and a breaking change of the carrier is marked in a commit of its own. A cycle, a module that through its carriers carries itself, is refused.
+- **No major version check, no holds.** Nothing reads a declared module by a module path, so it takes any version, and no `go.mod` requires it.
+
+`shippedBy` is required because bumpit cannot always tell whether a module carries another. Where it can, it checks: a Go module ships a declared module when one of its `//go:embed` patterns reaches the declared module's files. bumpit reads the patterns whatever the build constraints of a file and whether cgo is enabled or not, and leaves out the files no build compiles: test files, files whose constraint needs the `ignore` tag, as `//go:build ignore` does, and files the go command cannot read, such as a generator's template. It then refuses the declaration unless `shippedBy` names that Go module:
+
+```text
+modules: web/homepage: site.go:5:12 embeds web/homepage/dist into the module ., which then ships web/homepage; add . to its shippedBy
+```
+
+What bumpit cannot check is left to the declaration: a module that carries another through a Dockerfile or a script, and a `paths` list that misses a file the module is built from, whose commits then release nothing.
+
+bumpit also refuses a declaration whose directory holds a `go.mod`, which makes it a Go module; a path that names no tracked file, as a misspelt one would; a path inside the module's own directory, which it reads already; a carrier that is no module of the repository, and a cycle of carriers; and a tag prefix that cannot tell the module's tags from another module's: the same prefix, or one that continues the other with what can start a version, as `v1` continues `v` and would make `v10.0.0` a version of both.
+
+`explain` shows what a declared module reads, who carries it, and the path or module each commit came in through:
+
+```text
+Module: web/homepage (declared in bumpit.yaml)
+Paths: web/brand, web/pnpm-lock.yaml, deploy/homepage
+Current tag: homepage/v0.1.0
+...
+- 3f2a1c9 fix: sharpen the logo [patch: fix commit] via web/brand
+```
+
+The module around it says `Leaves out: web/homepage`, or `Ships: web/homepage` when `shippedBy` names it. In JSON, `bumpit modules` marks a declared module with `declared`, and `next` and `explain` carry `directory`, `paths`, `shipped_by`, `ships`, `leaves_out` and, on each commit, `via`.
+
+The declarations describe the repository, as its `go.mod` files do, so bumpit reads them from the `bumpit.yaml` at the top of the repository, wherever `--repo` points: a run from a subdirectory reads them too, while its other settings still come from the config found in `--repo`. A config given with `--config` that declares `modules`, an empty list included, takes their place; one that does not leaves them to the top. A config found in a subdirectory cannot declare modules of its own, and a top `bumpit.yaml` that cannot be read stops the run, since its declarations would be lost.
+
 ## Examples
 
 ```bash
@@ -206,13 +250,14 @@ bumpit next --pre beta                    # bumpit next -p beta
 bumpit next --promote                     # bumpit next -P
 bumpit next --release-as 1.0.0            # bumpit next -V 1.0.0
 bumpit next --module cmd/tool             # bumpit next -g cmd/tool
+bumpit next --module web/homepage         # a module bumpit.yaml declares
 bumpit modules --output json              # bumpit modules -o json
 bumpit tag --all-modules                  # bumpit tag -M
 ```
 
 ## Configuration
 
-`bumpit` looks for `bumpit.yaml` or `.bumpit.yaml` in the target repository. You can also pass an explicit path with `--config`.
+`bumpit` looks for `bumpit.yaml` or `.bumpit.yaml` in the target repository. You can also pass an explicit path with `--config`. The `modules` key is read from the config at the top of the repository; see "Modules without a go.mod".
 
 Precedence is:
 
@@ -224,30 +269,31 @@ Example:
 
 ```yaml
 repository: .
-tagMatch: ""  # empty: "v*", or the root Go module's tag prefix
+tagMatch: ""  # empty: "v*", or the root module's tag prefix
 startVersion: ""
 allowDirty: false
 output: text
 tagMessage: ""
 preRelease: ""
 promote: false
+modules: []   # modules with no go.mod; see "Modules without a go.mod"
 ```
 
 ## Notes
 
-- the default tag pattern is `v*`, or the root Go module's tag prefix in a Go repository
+- the default tag pattern is `v*`, or the root module's tag prefix in a Go repository or when `bumpit.yaml` declares `.`
 - the latest tag is always resolved by SemVer precedence, never by tag name or creation date
 - merge commits are ignored
 - the tool creates annotated local tags only
-- `bumpit tag --all-modules` tags every Go module that has a release, holds the ones that require an older version of another module of the repository, and creates no tag when a module cannot be planned
+- `bumpit tag --all-modules` tags every module that has a release, Go modules and the ones `bumpit.yaml` declares, holds the Go modules that require an older version of another module of the repository, and creates no tag when a module cannot be planned
 - the tool never pushes tags automatically
 - the CLI is built with Cobra
 - `bumpit next` returns exit code `0` and prints `no release` when no releasable commits exist, and `bumpit tag` then fails with `no releasable commits found; refusing to create a tag`
 - `--pre` applies an explicit prerelease label such as `beta` or `rc.1`
 - `--promote` removes the current prerelease suffix and produces the final release for the same base version
 - `--start-version` and `--release-as` take the version with or without the tag prefix
-- `explain` reports the base release, the last final release whose commits it reads, and the tags it ignored, and in a Go module the module and its dependents
-- the JSON payload of `next` and `explain` carries `base_tag`, `ignored_tags`, `module` and `dependents` beside the fields above
+- `explain` reports the base release, the last final release whose commits it reads, and the tags it ignored, in a Go module the module and its dependents, and in a declared module what it reads and who carries it
+- the JSON payload of `next` and `explain` carries `base_tag`, `ignored_tags`, `module` and `dependents` beside the fields above, and, when `bumpit.yaml` declares modules, `directory`, `paths` and `shipped_by` for a declared module, `ships` and `leaves_out` for the module around one, and `via` on the commits that came in through a path or a carried module
 
 ## Version
 
