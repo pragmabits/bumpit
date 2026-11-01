@@ -98,6 +98,7 @@ func writeModuleLines(text *strings.Builder, plan ReleasePlan) {
 		values []string
 	}{
 		{label: "Paths", values: plan.Paths},
+		{label: "Paths from the Node packages", values: plan.DerivedPaths},
 		{label: "Shipped by", values: plan.ShippedBy},
 		{label: "Ships", values: plan.Ships},
 		{label: "Leaves out", values: plan.LeavesOut},

@@ -9,6 +9,7 @@ import (
 
 	"github.com/pragmabits/bumpit/internal/gitx"
 	"github.com/pragmabits/bumpit/internal/gomod"
+	"github.com/pragmabits/bumpit/internal/nodejs"
 )
 
 // repositoryModule is a module bumpit versions: a Go module, found by its
@@ -24,6 +25,13 @@ type repositoryModule struct {
 	// shippedBy lists the directories of the modules whose release also
 	// carries a declared module.
 	shippedBy []string
+	// derivedPaths are the paths outside its directory that a declared
+	// module reads because its package.json depends on them: the packages it
+	// depends on and the files of its workspace roots.
+	derivedPaths []string
+	// derivationError is why derivedPaths could not be found, which fails
+	// the plans that read the module.
+	derivationError error
 }
 
 func goRepositoryModule(module gomod.Module) repositoryModule {
@@ -78,7 +86,59 @@ func discoverRepositoryModules(client gitx.Client, declarations []ModuleDeclarat
 	if err := checkDeclaredModules(client, top, modules); err != nil {
 		return nil, "", fmt.Errorf("modules: %w", err)
 	}
+	if err := deriveNodePaths(client, top, modules); err != nil {
+		return nil, "", err
+	}
 	return modules, top, nil
+}
+
+// deriveNodePaths finds the paths each declared module reads because of its
+// package.json. A module whose derivation fails keeps the error, so that only
+// the plans that read it fail. A repository that declares no module lists no
+// file for it.
+func deriveNodePaths(client gitx.Client, top string, modules []repositoryModule) error {
+	if !slices.ContainsFunc(modules, repositoryModule.declared) {
+		return nil
+	}
+	tracked, err := client.TrackedFiles(":/")
+	if err != nil {
+		return err
+	}
+
+	packages := nodejs.Read(top, tracked)
+	for index := range modules {
+		module := &modules[index]
+		if !module.declared() {
+			continue
+		}
+		inputs, err := packages.Inputs(module.directory)
+		if err != nil {
+			module.derivationError = fmt.Errorf("%s: %w", module.directory, err)
+			continue
+		}
+		module.derivedPaths = keptDerivedPaths(*module, inputs, modules)
+	}
+	return nil
+}
+
+// keptDerivedPaths leaves out of inputs what the module reads already: a path
+// its paths list, and one inside its own directory that no nested module
+// owns, by the same rule as its paths.
+func keptDerivedPaths(module repositoryModule, inputs []string, modules []repositoryModule) []string {
+	var kept []string
+	for _, entry := range inputs {
+		inside := within(entry, module.directory) && !insideNestedModule(entry, module, modules)
+		if !inside && !slices.Contains(module.paths, entry) {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
+}
+
+// readPaths are the paths outside its directory that a module reads: those
+// bumpit.yaml lists, then those its package.json derives.
+func (r repositoryModule) readPaths() []string {
+	return append(slices.Clone(r.paths), r.derivedPaths...)
 }
 
 // checkDeclaredModules refuses a declared module the repository contradicts,

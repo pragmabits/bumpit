@@ -169,12 +169,12 @@ func readOrder(client gitx.Client, tag string, read map[string]readCommit) ([]st
 func (m *moduleScope) queries() []commitQuery {
 	queries := []commitQuery{{pathspecs: ownPathspecs(m.module, m.modules)}}
 	queries = append(queries, m.goCodeQueries()...)
-	for _, entry := range m.module.paths {
+	for _, entry := range m.module.readPaths() {
 		queries = append(queries, commitQuery{pathspecs: []string{topPathspec(entry)}, via: entry})
 	}
 	for _, shipped := range m.shippedModules() {
 		queries = append(queries, commitQuery{pathspecs: ownPathspecs(shipped, m.modules), via: shipped.directory, shipped: true})
-		for _, entry := range shipped.paths {
+		for _, entry := range shipped.readPaths() {
 			queries = append(queries, commitQuery{pathspecs: []string{topPathspec(entry)}, via: shipped.directory, shipped: true})
 		}
 	}
@@ -228,6 +228,21 @@ func ownPathspecs(module repositoryModule, modules []repositoryModule) []string 
 	return pathspecs
 }
 
+// derivationError is why the paths of the module, or of a module it ships,
+// could not be derived from their package.json: the plan cannot know what
+// it reads.
+func (m *moduleScope) derivationError() error {
+	if m == nil {
+		return nil
+	}
+	for _, read := range append([]repositoryModule{m.module}, m.shippedModules()...) {
+		if read.derivationError != nil {
+			return read.derivationError
+		}
+	}
+	return nil
+}
+
 // shippedModules are the declared modules whose release the module carries,
 // by directory.
 func (m *moduleScope) shippedModules() []repositoryModule {
@@ -251,6 +266,7 @@ func (m *moduleScope) describe(plan *ReleasePlan) {
 	plan.Module = m.module.modulePath()
 	if m.module.declared() {
 		plan.Directory, plan.Paths, plan.ShippedBy = m.module.directory, m.module.paths, m.module.shippedBy
+		plan.DerivedPaths = m.module.derivedPaths
 	}
 	shipped := m.shippedModules()
 	for _, module := range shipped {
@@ -267,7 +283,7 @@ func (m *moduleScope) leftOut(shipped []repositoryModule) []string {
 	readers := append([]repositoryModule{m.module}, shipped...)
 	var paths []string
 	for _, reader := range readers {
-		paths = append(paths, reader.paths...)
+		paths = append(paths, reader.readPaths()...)
 	}
 
 	var left []string

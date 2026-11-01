@@ -61,12 +61,13 @@ func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
 	t.Parallel()
 
 	declared := ReleasePlan{
-		NextTag:     "homepage/v0.1.1",
-		HighestBump: "patch",
-		Directory:   "web/homepage",
-		Paths:       []string{"web/brand", "deploy/homepage"},
-		ShippedBy:   []string{"."},
-		Analyses:    []CommitDecision{{Hash: "abc1234", Subject: "fix: sharpen the logo", Bump: "patch", Reason: "fix commit", Via: "web/brand"}},
+		NextTag:      "homepage/v0.1.1",
+		HighestBump:  "patch",
+		Directory:    "web/homepage",
+		Paths:        []string{"deploy/homepage"},
+		DerivedPaths: []string{"web/brand", "web/package.json"},
+		ShippedBy:    []string{"."},
+		Analyses:     []CommitDecision{{Hash: "abc1234", Subject: "fix: sharpen the logo", Bump: "patch", Reason: "fix commit", Via: "web/brand"}},
 	}
 	shipper := ReleasePlan{
 		NextTag:     "v0.2.0",
@@ -81,7 +82,7 @@ func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
 		lines []string
 	}{
 		{plan: declared, lines: []string{
-			"Module: web/homepage (declared in bumpit.yaml)\nPaths: web/brand, deploy/homepage\nShipped by: .\nCurrent tag:",
+			"Module: web/homepage (declared in bumpit.yaml)\nPaths: deploy/homepage\nPaths from the Node packages: web/brand, web/package.json\nShipped by: .\nCurrent tag:",
 			"- abc1234 fix: sharpen the logo [patch: fix commit] via web/brand\n",
 		}},
 		{plan: shipper, lines: []string{"Module: example.com/repository\nShips: web/homepage\nLeaves out: docs\nCurrent tag:"}},

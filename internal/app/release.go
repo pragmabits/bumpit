@@ -75,6 +75,10 @@ type ReleasePlan struct {
 	// Ships lists the declared modules whose commits the module reads, since
 	// its release carries them.
 	Ships []string `json:"ships,omitempty"`
+	// DerivedPaths are the paths a declared module reads because of its
+	// package.json: the packages it depends on and the files of its
+	// workspace roots.
+	DerivedPaths []string `json:"derived_paths,omitempty"`
 	// LeavesOut lists the declared modules nested in the module, whose
 	// commits it does not read.
 	LeavesOut        []string `json:"leaves_out,omitempty"`
@@ -134,6 +138,9 @@ func BuildReleasePlan(opts Options) (ReleasePlan, error) {
 // the tags opts matches outside one, leaving out the versions of the modules
 // whose prefixes otherPrefixes lists.
 func planRelease(client gitx.Client, scope *moduleScope, otherPrefixes []string, opts Options) (ReleasePlan, error) {
+	if err := scope.derivationError(); err != nil {
+		return ReleasePlan{}, err
+	}
 	tagMatch := tagPattern(scope, opts.TagMatch)
 	tags, err := collectVersionTags(client, tagMatch, false, otherPrefixes)
 	if err != nil {
