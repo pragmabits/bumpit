@@ -38,7 +38,9 @@ func newModulesCmd() *cobra.Command {
 		},
 	}
 
+	command.Args = cobra.NoArgs
 	flags.bind(command)
+	command.AddCommand(newModulesAddCmd(), newModulesSetCmd(), newModulesRemoveCmd())
 	return command
 }
 

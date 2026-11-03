@@ -38,6 +38,7 @@ func newRootCmd() *cobra.Command {
 	rootCommand.AddCommand(newExplainCmd())
 	rootCommand.AddCommand(newTagCmd())
 	rootCommand.AddCommand(newModulesCmd())
+	rootCommand.AddCommand(newConfigCmd())
 	rootCommand.AddCommand(newVersionCmd())
 	return rootCommand
 }

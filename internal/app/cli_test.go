@@ -26,65 +26,103 @@ func TestCommandFlagShorthands(t *testing.T) {
 		"release-as":    "V",
 		"module":        "g",
 	}
+	editShorthands := map[string]string{"config": "c", "repo": "r"}
+	declarationShorthands := withShorthands(editShorthands, map[string]string{"tag-prefix": "T", "path": "f", "shipped-by": "b", "shipped-by-none": "B"})
 
 	expected := map[string]map[string]string{
-		"latest":  {"config": "c", "repo": "r", "match": "t", "output": "o", "all": "a", "no-prefix": "n", "module": "g"},
-		"next":    withShorthands(releaseShorthands, map[string]string{"output": "o"}),
-		"explain": withShorthands(releaseShorthands, map[string]string{"output": "o"}),
-		"tag":     withShorthands(releaseShorthands, map[string]string{"message": "m", "all-modules": "M"}),
-		"modules": {"config": "c", "repo": "r", "output": "o", "allow-dirty": "d"},
+		"bumpit latest":         {"config": "c", "repo": "r", "match": "t", "output": "o", "all": "a", "no-prefix": "n", "module": "g"},
+		"bumpit next":           withShorthands(releaseShorthands, map[string]string{"output": "o"}),
+		"bumpit explain":        withShorthands(releaseShorthands, map[string]string{"output": "o"}),
+		"bumpit tag":            withShorthands(releaseShorthands, map[string]string{"message": "m", "all-modules": "M"}),
+		"bumpit modules":        {"config": "c", "repo": "r", "output": "o", "allow-dirty": "d"},
+		"bumpit modules add":    declarationShorthands,
+		"bumpit modules set":    withShorthands(declarationShorthands, map[string]string{"no-paths": "N"}),
+		"bumpit modules remove": editShorthands,
+		"bumpit config":         {},
+		"bumpit config get":     editShorthands,
+		"bumpit config set":     editShorthands,
+		"bumpit config unset":   editShorthands,
+		"bumpit version":        {},
 	}
 
-	for _, command := range newRootCmd().Commands() {
-		expectedShorthands, documented := expected[command.Name()]
-		if !documented {
+	commands := map[string]*cobra.Command{}
+	for _, command := range allCommands(newRootCmd()) {
+		commands[command.CommandPath()] = command
+	}
+	for path, expectedShorthands := range expected {
+		command, found := commands[path]
+		if !found {
+			t.Errorf("%s: the command does not exist", path)
 			continue
 		}
-
-		shorthandOwners := map[string]string{}
-		command.Flags().VisitAll(func(flag *pflag.Flag) {
-			if flag.Name == "help" {
-				return
-			}
-
-			if flag.Shorthand == "" {
-				t.Errorf("%s: --%s has no shorthand", command.Name(), flag.Name)
-				return
-			}
-			if owner, taken := shorthandOwners[flag.Shorthand]; taken {
-				t.Errorf("%s: -%s is shared by --%s and --%s", command.Name(), flag.Shorthand, owner, flag.Name)
-			}
-			shorthandOwners[flag.Shorthand] = flag.Name
-
-			wanted, listed := expectedShorthands[flag.Name]
-			if !listed {
-				t.Errorf("%s: --%s is not covered by the expected shorthand table", command.Name(), flag.Name)
-				return
-			}
-			if flag.Shorthand != wanted {
-				t.Errorf("%s: --%s shorthand = %q, want %q", command.Name(), flag.Name, flag.Shorthand, wanted)
-			}
-		})
-
-		for flagName := range expectedShorthands {
-			if command.Flags().Lookup(flagName) == nil {
-				t.Errorf("%s: expected flag --%s to exist", command.Name(), flagName)
-			}
+		checkShorthands(t, command, expectedShorthands)
+	}
+	for path := range commands {
+		if _, documented := expected[path]; !documented && path != "bumpit" {
+			t.Errorf("%s: the command is not covered by the expected shorthand table", path)
 		}
 	}
+}
+
+// checkShorthands checks that every flag of command but help has the
+// shorthand expected gives it, and that every flag expected names exists.
+func checkShorthands(t *testing.T, command *cobra.Command, expected map[string]string) {
+	t.Helper()
+
+	path := command.CommandPath()
+	shorthandOwners := map[string]string{}
+	command.Flags().VisitAll(func(flag *pflag.Flag) {
+		if flag.Name == "help" {
+			return
+		}
+		if flag.Shorthand == "" {
+			t.Errorf("%s: --%s has no shorthand", path, flag.Name)
+			return
+		}
+		if owner, taken := shorthandOwners[flag.Shorthand]; taken {
+			t.Errorf("%s: -%s is shared by --%s and --%s", path, flag.Shorthand, owner, flag.Name)
+		}
+		shorthandOwners[flag.Shorthand] = flag.Name
+
+		wanted, listed := expected[flag.Name]
+		if !listed {
+			t.Errorf("%s: --%s is not covered by the expected shorthand table", path, flag.Name)
+			return
+		}
+		if flag.Shorthand != wanted {
+			t.Errorf("%s: --%s shorthand = %q, want %q", path, flag.Name, flag.Shorthand, wanted)
+		}
+	})
+
+	for flagName := range expected {
+		if command.Flags().Lookup(flagName) == nil {
+			t.Errorf("%s: expected flag --%s to exist", path, flagName)
+		}
+	}
+}
+
+// allCommands is command and every command below it, help left out.
+func allCommands(command *cobra.Command) []*cobra.Command {
+	commands := []*cobra.Command{command}
+	for _, child := range command.Commands() {
+		if child.Name() != "help" {
+			commands = append(commands, allCommands(child)...)
+		}
+	}
+	return commands
 }
 
 func TestShorthandsAreConsistentAcrossCommands(t *testing.T) {
 	t.Parallel()
 
 	owners := map[string]string{}
-	for _, command := range newRootCmd().Commands() {
+	for _, command := range allCommands(newRootCmd()) {
 		command.Flags().VisitAll(func(flag *pflag.Flag) {
 			if flag.Name == "help" || flag.Shorthand == "" {
 				return
 			}
 			if owner, taken := owners[flag.Shorthand]; taken && owner != flag.Name {
-				t.Errorf("-%s means --%s in one command and --%s in %s", flag.Shorthand, owner, flag.Name, command.Name())
+				t.Errorf("-%s means --%s in one command and --%s in %s", flag.Shorthand, owner, flag.Name, command.CommandPath())
 				return
 			}
 			owners[flag.Shorthand] = flag.Name

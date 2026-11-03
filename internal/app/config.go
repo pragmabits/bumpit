@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -40,6 +41,20 @@ type Config struct {
 // LoadConfig reads the config at path over defaults and validates it. It
 // returns the config and its absolute path.
 func LoadConfig(path string, defaults Config) (Config, string, error) {
+	config, absolutePath, err := decodeConfig(path, defaults)
+	if err != nil {
+		return Config{}, "", err
+	}
+	if err := validateConfig(config); err != nil {
+		return Config{}, "", err
+	}
+	return config, absolutePath, nil
+}
+
+// decodeConfig reads the config at path over defaults, its repository
+// resolved against the directory of path, without validating it. It returns
+// the config and its absolute path.
+func decodeConfig(path string, defaults Config) (Config, string, error) {
 	if strings.TrimSpace(path) == "" {
 		return Config{}, "", fmt.Errorf("config path cannot be empty")
 	}
@@ -49,22 +64,34 @@ func LoadConfig(path string, defaults Config) (Config, string, error) {
 	if err := configReader.ReadInConfig(); err != nil {
 		return Config{}, "", err
 	}
-
-	var config Config
-	if err := configReader.UnmarshalExact(&config); err != nil {
-		return Config{}, "", fmt.Errorf("parse config %q: %w", path, err)
-	}
-
 	absolutePath, err := filepath.Abs(configReader.ConfigFileUsed())
 	if err != nil {
 		return Config{}, "", err
 	}
-	config.Repository = resolveRepositoryPath(absolutePath, config.Repository)
-	if err := validateConfig(config); err != nil {
-		return Config{}, "", err
-	}
+	config, err := unmarshalConfig(configReader, path, absolutePath)
+	return config, absolutePath, err
+}
 
-	return config, absolutePath, nil
+// decodeConfigContent reads content as the YAML config at path over
+// defaults, without validating it, as decodeConfig reads the file.
+func decodeConfigContent(content []byte, defaults Config, path string) (Config, error) {
+	configReader := newConfigReader(defaults)
+	configReader.SetConfigType("yaml")
+	if err := configReader.ReadConfig(bytes.NewReader(content)); err != nil {
+		return Config{}, err
+	}
+	return unmarshalConfig(configReader, path, path)
+}
+
+// unmarshalConfig is the config configReader read from path, its repository
+// resolved against the directory of absolutePath.
+func unmarshalConfig(configReader *viper.Viper, path, absolutePath string) (Config, error) {
+	var config Config
+	if err := configReader.UnmarshalExact(&config); err != nil {
+		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
+	}
+	config.Repository = resolveRepositoryPath(absolutePath, config.Repository)
+	return config, nil
 }
 
 // DiscoverConfig loads bumpit.yaml, or else .bumpit.yaml, from the repository,
