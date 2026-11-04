@@ -29,6 +29,11 @@ type Package struct {
 	// top of the repository: "." for the top.
 	Directory string
 	Name      string
+	// Version is the version the package gives itself, empty when it gives
+	// none.
+	Version string
+	// Private reports a package its manager never publishes.
+	Private bool
 	// Dependencies are those of its dependencies, devDependencies,
 	// optionalDependencies and peerDependencies, in that order.
 	Dependencies []Dependency
@@ -53,6 +58,8 @@ type Repository struct {
 // manifest is the part of a package.json bumpit reads.
 type manifest struct {
 	Name                 string            `json:"name"`
+	Version              json.RawMessage   `json:"version"`
+	Private              json.RawMessage   `json:"private"`
 	Dependencies         map[string]string `json:"dependencies"`
 	DevDependencies      map[string]string `json:"devDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
@@ -106,6 +113,8 @@ func (r *Repository) readPackage(file string) {
 	found := Package{
 		Directory:  directory,
 		Name:       read.Name,
+		Version:    stringOf(read.Version),
+		Private:    isTruthy(read.Private),
 		Workspaces: len(read.Workspaces) > 0 && string(read.Workspaces) != "null",
 		Overrides:  overridesOf(read),
 	}
@@ -116,6 +125,48 @@ func (r *Repository) readPackage(file string) {
 	if found.Name != "" {
 		r.names[found.Name] = append(r.names[found.Name], directory)
 	}
+}
+
+// stringOf is the string a JSON value holds, empty for any other value, so
+// that a version bumpit cannot read does not make the package unreadable for
+// the derivations, which do not read it.
+func stringOf(value json.RawMessage) string {
+	var text string
+	if json.Unmarshal(value, &text) != nil {
+		return ""
+	}
+	return text
+}
+
+// isTruthy reports a JSON value JavaScript takes as true, as npm reads
+// private: anything but false, null, 0, an empty string, or no value.
+func isTruthy(value json.RawMessage) bool {
+	var read any
+	if json.Unmarshal(value, &read) != nil {
+		return false
+	}
+	switch typed := read.(type) {
+	case nil:
+		return false
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case string:
+		return typed != ""
+	default:
+		return true
+	}
+}
+
+// Packages are the packages that could be read, by directory.
+func (r Repository) Packages() []Package {
+	packages := make([]Package, 0, len(r.packages))
+	for _, found := range r.packages {
+		packages = append(packages, found)
+	}
+	slices.SortFunc(packages, func(left, right Package) int { return strings.Compare(left.Directory, right.Directory) })
+	return packages
 }
 
 // readManifest reads the package.json at file. A byte order mark, which npm
