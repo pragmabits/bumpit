@@ -21,7 +21,12 @@ func listTracked(client gitx.Client) (trackedTree, error) {
 	if err != nil {
 		return trackedTree{}, err
 	}
+	return newTrackedTree(files), nil
+}
 
+// newTrackedTree is the tree of files, slash separated and relative to the
+// top of the repository.
+func newTrackedTree(files []string) trackedTree {
 	tree := trackedTree{files: files, present: map[string]bool{}, directories: map[string]bool{}}
 	for _, file := range files {
 		tree.present[file] = true
@@ -29,7 +34,7 @@ func listTracked(client gitx.Client) (trackedTree, error) {
 			tree.directories[directory] = true
 		}
 	}
-	return tree, nil
+	return tree
 }
 
 // holds reports whether the repository tracks entry: a file, a directory

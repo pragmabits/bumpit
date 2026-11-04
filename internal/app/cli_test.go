@@ -42,6 +42,7 @@ func TestCommandFlagShorthands(t *testing.T) {
 		"bumpit config get":     editShorthands,
 		"bumpit config set":     editShorthands,
 		"bumpit config unset":   editShorthands,
+		"bumpit init":           {"repo": "r", "output": "o"},
 		"bumpit version":        {},
 	}
 

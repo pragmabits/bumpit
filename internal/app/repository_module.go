@@ -72,6 +72,13 @@ func (r repositoryModule) modulePath() string {
 // one first and the others by directory: its Go modules and the modules
 // declarations declares. It refuses a declaration the repository contradicts.
 func discoverRepositoryModules(client gitx.Client, declarations []ModuleDeclaration) ([]repositoryModule, string, error) {
+	return discoverRepositoryModulesIn(client, declarations, nil)
+}
+
+// discoverRepositoryModulesIn is discoverRepositoryModules with tracked, the
+// tracked files of the repository, listed already, or nil to list them when
+// a declaration needs them.
+func discoverRepositoryModulesIn(client gitx.Client, declarations []ModuleDeclaration, tracked *trackedTree) ([]repositoryModule, string, error) {
 	if err := validateModuleDeclarations(declarations); err != nil {
 		return nil, "", err
 	}
@@ -93,22 +100,35 @@ func discoverRepositoryModules(client gitx.Client, declarations []ModuleDeclarat
 	if !slices.ContainsFunc(modules, repositoryModule.declared) {
 		return modules, top, nil
 	}
-
-	tracked, err := listTracked(client)
-	if err != nil {
+	if err := checkAndReadDeclared(client, top, modules, tracked); err != nil {
 		return nil, "", err
 	}
-	if err := checkDeclaredModules(client, tracked, top, modules); err != nil {
-		return nil, "", fmt.Errorf("modules: %w", err)
+	return modules, top, nil
+}
+
+// checkAndReadDeclared refuses the declared modules the repository
+// contradicts, and gives the others what they read: their Node.js packages
+// and the Go code in their directories. tracked is the tracked files of the
+// repository, or nil to list them.
+func checkAndReadDeclared(client gitx.Client, top string, modules []repositoryModule, tracked *trackedTree) error {
+	if tracked == nil {
+		listed, err := listTracked(client)
+		if err != nil {
+			return err
+		}
+		tracked = &listed
 	}
-	node := newNodePackages(top, tracked)
+	if err := checkDeclaredModules(client, *tracked, top, modules); err != nil {
+		return fmt.Errorf("modules: %w", err)
+	}
+	node := newNodePackages(top, *tracked)
 	for index := range modules {
 		if modules[index].declared() {
 			modules[index].node = node
-			modules[index].goCode = findGoCode(top, tracked, modules[index], modules)
+			modules[index].goCode = findGoCode(top, *tracked, modules[index], modules)
 		}
 	}
-	return modules, top, nil
+	return nil
 }
 
 // keptDerivedPaths leaves out of inputs what the module reads already: a path
@@ -297,44 +317,94 @@ func checkGoShipping(tracked trackedTree, top string, modules []repositoryModule
 	declared := slices.DeleteFunc(slices.Clone(modules), func(module repositoryModule) bool {
 		return !module.declared() || module.directory == "."
 	})
+	return visitShipping(tracked, top, declared, modules, embedCache{}, func(found shipping) error {
+		if carriersOf(found.module, modules)[found.goModule.directory] {
+			return nil
+		}
+		return fmt.Errorf("%s: %s:%s embeds %s into the module %s, which then ships %s; add %s to its shippedBy", found.module.directory, found.file, found.embed.Place(), found.embed.Pattern, found.goModule.directory, found.module.directory, found.goModule.directory)
+	})
+}
+
+// shipping is a //go:embed pattern of a Go file by which its Go module
+// ships a declared module.
+type shipping struct {
+	module   repositoryModule
+	goModule repositoryModule
+	file     string
+	embed    gomod.Embed
+}
+
+// embedCache keeps the //go:embed patterns of each Go file read, so that a
+// file is read once however many modules ask about it.
+type embedCache map[string][]gomod.Embed
+
+func (c embedCache) read(top, file string) ([]gomod.Embed, error) {
+	if embeds, read := c[file]; read {
+		return embeds, nil
+	}
+	embeds, err := gomod.FileEmbeds(filepath.Join(top, filepath.FromSlash(file)))
+	if err == nil {
+		c[file] = embeds
+	}
+	return embeds, err
+}
+
+// findShipping lists every //go:embed pattern by which a Go module ships one
+// of declared, in the order of the files and of the patterns in each.
+func findShipping(tracked trackedTree, top string, declared, modules []repositoryModule, cache embedCache) ([]shipping, error) {
+	var shippings []shipping
+	err := visitShipping(tracked, top, declared, modules, cache, func(found shipping) error {
+		shippings = append(shippings, found)
+		return nil
+	})
+	return shippings, err
+}
+
+// visitShipping calls visit with every //go:embed pattern by which a Go
+// module ships one of declared, in the order of the files and of the
+// patterns in each, and stops at the first error, before it reads a later
+// file. A Go file ships the declared modules it can reach: those its
+// package lies in, and those under the directory of its package, when no
+// nested Go module stands between them, since the go command embeds no file
+// of another module. A test file ships nothing.
+func visitShipping(tracked trackedTree, top string, declared, modules []repositoryModule, cache embedCache, visit func(shipping) error) error {
 	if len(declared) == 0 {
 		return nil
 	}
-
 	for _, file := range tracked.files {
-		if !strings.HasSuffix(file, ".go") {
+		packageDirectory := path.Dir(file)
+		goModule := deepestModule(file, modules, isGoModule)
+		if !strings.HasSuffix(file, ".go") || strings.HasSuffix(file, "_test.go") || gomod.Ignored(packageDirectory) || goModule == nil {
 			continue
 		}
-		if err := checkGoFile(top, file, declared, modules); err != nil {
+		reachable := reachableModules(packageDirectory, *goModule, declared, modules)
+		if len(reachable) == 0 {
+			continue
+		}
+		embeds, err := cache.read(top, file)
+		if err != nil {
+			return err
+		}
+		if err := visitFile(shipping{goModule: *goModule, file: file}, embeds, reachable, modules, visit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkGoFile checks the declared modules that the //go:embed patterns of one
-// Go file can reach: those its package lies in, and those under the
-// directory of its package, when no nested Go module stands between them,
-// since the go command embeds no file of another module. A test file ships
-// nothing.
-func checkGoFile(top, file string, declared, modules []repositoryModule) error {
-	packageDirectory := path.Dir(file)
-	goModule := deepestModule(file, modules, isGoModule)
-	if strings.HasSuffix(file, "_test.go") || gomod.Ignored(packageDirectory) || goModule == nil {
-		return nil
-	}
-
-	reachable := reachableModules(packageDirectory, *goModule, declared, modules)
-	if len(reachable) == 0 {
-		return nil
-	}
-	embeds, err := gomod.FileEmbeds(filepath.Join(top, filepath.FromSlash(file)))
-	if err != nil {
-		return err
-	}
+// visitFile calls visit with each pattern of the Go file of found that
+// reaches one of reachable.
+func visitFile(found shipping, embeds []gomod.Embed, reachable, modules []repositoryModule, visit func(shipping) error) error {
 	for _, module := range reachable {
-		if err := checkShipping(file, embeds, *goModule, module, modules); err != nil {
-			return fmt.Errorf("%s: %w", module.directory, err)
+		nested := nestedDirectories(module, modules)
+		for _, embed := range embeds {
+			if !gomod.PatternReaches(path.Dir(found.file), embed.Pattern, module.directory, nested) {
+				continue
+			}
+			found.module, found.embed = module, embed
+			if err := visit(found); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -350,22 +420,6 @@ func reachableModules(packageDirectory string, goModule repositoryModule, declar
 		sameGoModule := nearest != nil && nearest.directory == goModule.directory
 		return !sameGoModule || !within(packageDirectory, module.directory) && !within(module.directory, packageDirectory)
 	})
-}
-
-// checkShipping refuses the Go file of goModule when one of its //go:embed
-// patterns reaches the declared module and goModule does not carry it.
-func checkShipping(file string, embeds []gomod.Embed, goModule, module repositoryModule, modules []repositoryModule) error {
-	if carriersOf(module, modules)[goModule.directory] {
-		return nil
-	}
-
-	nested := nestedDirectories(module, modules)
-	for _, embed := range embeds {
-		if gomod.PatternReaches(path.Dir(file), embed.Pattern, module.directory, nested) {
-			return fmt.Errorf("%s:%s embeds %s into the module %s, which then ships %s; add %s to its shippedBy", file, embed.Place(), embed.Pattern, goModule.directory, module.directory, goModule.directory)
-		}
-	}
-	return nil
 }
 
 // carriersOf lists the modules whose release carries module: those its

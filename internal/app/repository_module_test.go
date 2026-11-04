@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pragmabits/bumpit/internal/gitx"
 )
 
 // TestDiscoveryRefusesModuleDeclarations covers what the repository must
@@ -160,5 +162,35 @@ func TestDiscoveryStopsEmbedsAtNestedGoModules(t *testing.T) {
 	declarations := []ModuleDeclaration{declare("cmd/tool/ui", "", nil, "cmd/tool")}
 	if _, err := BuildReleasePlan(Options{Repository: repositoryPath, Modules: declarations}); err != nil {
 		t.Fatalf("an embed that stops at the nested Go module was refused: %v", err)
+	}
+}
+
+// TestDiscoverRepositoryModulesNamesTheMissingCarrierFirst refuses the
+// declaration an earlier Go file ships before a later Go file it cannot
+// read stops the check.
+func TestDiscoverRepositoryModulesNamesTheMissingCarrierFirst(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads a directory whatever its mode")
+	}
+
+	repositoryPath := initRepository(t)
+	commitGoMod(t, repositoryPath, ".", "example.com/repository", "feat: initial library")
+	commitNewFile(t, repositoryPath, "web/homepage/index.html", "homepage", "feat: add the homepage")
+	commitFile(t, repositoryPath, "site.go", "package repository\n\nimport _ \"embed\"\n\n//go:embed web/homepage/index.html\nvar page string\n", "feat: serve the homepage")
+	commitNewFile(t, repositoryPath, "web/homepage/zz/late.go", "package zz\n", "feat: add a late package")
+	locked := filepath.Join(repositoryPath, "web", "homepage", "zz")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("Chmod returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(locked, 0o755); err != nil {
+			t.Errorf("Chmod returned error: %v", err)
+		}
+	})
+
+	_, _, err := discoverRepositoryModules(gitx.New(repositoryPath), []ModuleDeclaration{declare("web/homepage", "", nil)})
+	if err == nil || !strings.Contains(err.Error(), "add . to its shippedBy") {
+		t.Fatalf("discoverRepositoryModules returned %v, want the missing carrier", err)
 	}
 }

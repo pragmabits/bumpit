@@ -37,13 +37,8 @@ func (n *nodePackages) derive(module repositoryModule, modules []repositoryModul
 	if found, known := n.derived[module.directory]; known {
 		return found.paths, found.err
 	}
-	if n.packages == nil {
-		read := nodejs.Read(n.top, n.tracked)
-		n.packages = &read
-	}
-
 	var found derivation
-	inputs, err := n.packages.Inputs(module.directory)
+	inputs, err := n.repository().Inputs(module.directory)
 	if err != nil {
 		found.err = fmt.Errorf("%s: %w", module.directory, err)
 	} else {
@@ -51,4 +46,14 @@ func (n *nodePackages) derive(module repositoryModule, modules []repositoryModul
 	}
 	n.derived[module.directory] = found
 	return found.paths, found.err
+}
+
+// repository is the Node.js packages of the repository, read the first time
+// they are needed.
+func (n *nodePackages) repository() *nodejs.Repository {
+	if n.packages == nil {
+		read := nodejs.Read(n.top, n.tracked)
+		n.packages = &read
+	}
+	return n.packages
 }

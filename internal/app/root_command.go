@@ -39,6 +39,7 @@ func newRootCmd() *cobra.Command {
 	rootCommand.AddCommand(newTagCmd())
 	rootCommand.AddCommand(newModulesCmd())
 	rootCommand.AddCommand(newConfigCmd())
+	rootCommand.AddCommand(newInitCmd())
 	rootCommand.AddCommand(newVersionCmd())
 	return rootCommand
 }
