@@ -26,6 +26,9 @@ bumpit next
 bumpit explain
 bumpit tag
 bumpit modules
+bumpit modules add|set|remove <directory>
+bumpit config get|set|unset <key>
+bumpit init
 bumpit version     # or bumpit --version
 bumpit completion  # bash, zsh, fish or powershell
 bumpit help
@@ -71,11 +74,11 @@ Every flag has a short form, and a letter always means the same thing across com
 
 | Short | Long | Commands | Description |
 | --- | --- | --- | --- |
-| `-c` | `--config` | `latest`, `next`, `explain`, `tag`, `modules` | path to `bumpit.yaml` |
-| `-r` | `--repo` | `latest`, `next`, `explain`, `tag`, `modules` | path to the git repository |
+| `-c` | `--config` | `latest`, `next`, `explain`, `tag`, `modules`, `modules add`, `modules set`, `modules remove`, `config get`, `config set`, `config unset` | path to `bumpit.yaml` |
+| `-r` | `--repo` | `latest`, `next`, `explain`, `tag`, `modules`, `modules add`, `modules set`, `modules remove`, `config get`, `config set`, `config unset`, `init` | path to the git repository |
 | `-t` | `--match` | `latest`, `next`, `explain`, `tag` | tag pattern used to filter candidate tags; default `v*`, or the module's tag prefix |
 | `-g` | `--module` | `latest`, `next`, `explain`, `tag` | directory of the module to version, relative to `--repo`: a Go module, or one `bumpit.yaml` declares |
-| `-o` | `--output` | `latest`, `next`, `explain`, `modules` | output format: `text` or `json` |
+| `-o` | `--output` | `latest`, `next`, `explain`, `modules`, `init` | output format: `text` or `json` |
 | `-a` | `--all` | `latest` | consider every tag, not only the ones reachable from `HEAD` |
 | `-n` | `--no-prefix` | `latest` | print the bare version instead of the tag |
 | `-s` | `--start-version` | `next`, `explain`, `tag` | version for the first release when no tags exist |
@@ -85,9 +88,14 @@ Every flag has a short form, and a letter always means the same thing across com
 | `-V` | `--release-as` | `next`, `explain`, `tag` | release this exact version, the only way to reach `1.0.0` |
 | `-m` | `--message` | `tag` | annotated tag message |
 | `-M` | `--all-modules` | `tag` | tag every module that has a release, Go modules and the ones `bumpit.yaml` declares, holding the Go modules that require an older version of another module |
+| `-T` | `--tag-prefix` | `modules add`, `modules set` | what every tag of the declared module starts with, its `v` included |
+| `-f` | `--path` | `modules add`, `modules set` | a file or directory outside the module that it is built from, relative to `--repo`; repeat it for each |
+| `-N` | `--no-paths` | `modules set` | leave out every path the declaration lists |
+| `-b` | `--shipped-by` | `modules add`, `modules set` | the directory of a module whose release also carries this one, relative to `--repo`; repeat it for each |
+| `-B` | `--shipped-by-none` | `modules add`, `modules set` | say that no other module's release carries this one |
 | `-v` | `--version` | `bumpit` itself | print the version, as `bumpit version` does |
 
-`-t` carries the tag pattern instead of `-m` so that `-m` can keep its usual meaning from `git tag -m` and `git commit -m`. `-p` and `-P` are the mutually exclusive prerelease pair, and `-V` excludes both. `-g` sets the tag pattern from the module, so it excludes `-t`. `-M` tags every module at its own next version, so it excludes `-g`, `-t`, `-V`, `-p` and `-P`. `-a` is not used for it because `latest -a` already means every tag, and `git tag -a` means an annotated tag. `-h` is reserved by the CLI for help.
+`-t` carries the tag pattern instead of `-m` so that `-m` can keep its usual meaning from `git tag -m` and `git commit -m`. `-p` and `-P` are the mutually exclusive prerelease pair, and `-V` excludes both. `-g` sets the tag pattern from the module, so it excludes `-t`. `-M` tags every module at its own next version, so it excludes `-g`, `-t`, `-V`, `-p` and `-P`. `-a` is not used for it because `latest -a` already means every tag, and `git tag -a` means an annotated tag. `-b` and `-B` exclude each other, and so do `-f` and `-N`; a switch given as `=false`, such as `--no-paths=false`, asks for nothing. `-h` is reserved by the CLI for help.
 
 Short flags can be bundled. A flag that takes a value must come last in the bundle, because it consumes the rest of the group:
 
@@ -239,6 +247,45 @@ The module around it says `Leaves out: web/homepage`, or `Ships: web/homepage` w
 
 The declarations describe the repository, as its `go.mod` files do, so bumpit reads them from the `bumpit.yaml` at the top of the repository, wherever `--repo` points: a run from a subdirectory reads them too, while its other settings still come from the config found in `--repo`. A config given with `--config` that declares `modules`, an empty list included, takes their place; one that does not leaves them to the top. A config found in a subdirectory cannot list modules of its own, though it may say `modules: []`. Of the top `bumpit.yaml`, a run from a subdirectory reads the `modules` key alone, so that its other keys, which are not the run's, cannot stop it; modules it cannot read stop the run, since they would be lost.
 
+### Declaring modules from the command line
+
+`bumpit modules add`, `set` and `remove` edit the declarations, so `bumpit.yaml` need not be written by hand:
+
+```bash
+bumpit modules add web/homepage -T homepage/v -f deploy/homepage -B   # declare it
+bumpit modules set web/homepage -b .                                 # . ships it now
+bumpit modules set web/homepage -N                                   # it reads no path outside its directory
+bumpit modules remove web/homepage
+```
+
+- **Which file.** The edit goes where the runs read the declarations from: the config `--config` names when it declares `modules`, else the `bumpit.yaml` or `.bumpit.yaml` at the top of the repository, created when there is none. A `--config` that declares no `modules` is refused, since the runs read them from the top, unless it is the top config itself.
+- **Paths.** The directory, `--path` and `--shipped-by` are relative to `--repo`, as `--module` is, and are written relative to the top of the repository.
+- **add** needs `--shipped-by` or `--shipped-by-none`, as the declaration needs `shippedBy`, and refuses a directory declared already. **set** changes what its flags give and leaves the rest: `--tag-prefix ""` returns to the default prefix. **remove** takes the comments inside the declaration with it; removing the last one leaves `modules: []`.
+- **The rest of the file stays as it is**, comments, blank lines, indentation and line endings included: a new declaration goes after the last one, in its indentation, with its keys in the order `directory`, `tagPrefix`, `paths`, `shippedBy`. `set` writes the declaration anew, so it refuses one that holds a comment. A file the edit cannot change line by line is refused: several YAML documents, a root that is no block mapping, `modules` written as a list in `[...]` that has items or as an empty value on a line of its own, a block scalar (`|` or `>`), an anchor or an alias in the modules, and a key written twice, since keys are compared without case.
+- **Proof before writing.** The file is written only once its new text loads, valid, as the config it was with the edit applied, and the repository accepts the new modules, with every check a run makes. It is then written at once, by renaming the new text onto it, keeping its mode and, when it is a link, the link. When the proof fails the file is left as it was.
+
+`bumpit init` starts a repository off: it creates `bumpit.yaml` at the top of the repository, where the declarations are read from, when it has neither `bumpit.yaml` nor `.bumpit.yaml`, and declares nothing in it. It then proposes the modules to declare, each with the `bumpit modules add` that declares it, to run from where `init` ran:
+
+```text
+created /path/to/repo/bumpit.yaml
+tags no module owns:
+  homepage/v: 4 tags, the newest homepage/v0.4.0
+    bumpit modules add deploy/homepage -T homepage/v -B
+    bumpit modules add web/homepage -T homepage/v -b .
+      site.go:5:12 embeds web/homepage/index.html
+manifests with a version of their own:
+  deploy/chart/Chart.yaml: version 1.4.0
+    bumpit modules add deploy/chart -B
+-B says no module ships the directory, but bumpit sees only //go:embed: check that no Dockerfile, CI job or other build copies it into the release of another module, and give that module with -b if one does
+commit the file so that every clone of the repository reads the change
+```
+
+- **Tags no module owns.** A tag is the release of a module when it is that module's tag prefix followed by a semantic version. The tags a run with no module reads are owned too: `v` followed by a version, and those of the `tagMatch` of the top `bumpit.yaml`. The prefix of any other tag is the text before its version, which starts at the first digit after a character that is no digit: `release-10.0.0` has the prefix `release-`, not `release-1`. The directories proposed for a prefix are the tracked ones whose last elements are its name, the separators at its end dropped, and a `v` before them when a separator or nothing comes before it: `homepage/v` and `homepage-v` propose every directory named `homepage`, while `kv` proposes those named `kv`. The directories of modules, and those inside `vendor`, `testdata` or `node_modules`, are left out. Tags with no prefix, such as `1.2.3`, are listed as `(no prefix)` with nothing to propose, since a declared module's tags start with a prefix.
+- **Manifests.** A `Chart.yaml` that gives a `version` and is no subchart, in the `charts` directory of another chart, and a `package.json` that gives a `version` and is not `private`, read as npm reads it, so that `"private": "true"` is private too. Each must lie in a directory that is no module, is not inside `vendor`, `testdata` or `node_modules`, and that no tag line proposes already. A `Chart.yaml` there that cannot be read is listed as such, and stops nothing.
+- **Refusals.** Each proposal is checked as `bumpit modules add` would check it, and one it would refuse, such as a directory with a glob character or a tag prefix that cannot be told from another module's, is listed with why in place of the command. A path that starts with `-` is written after `./`, so that the command does not read it as a flag.
+- **Shipping.** A proposal says `-b` for each Go module whose `//go:embed` patterns reach the directory, with the patterns and where they are written, and `-B` when none does. bumpit sees nothing else, so a `-B` is to be checked. Paths are relative to `--repo`, those of the patterns included.
+- Running `init` again leaves the config as it is and proposes what is still not declared. `--output json` gives `config`, `created`, `tag_lines` and `manifests`, each proposal with `directory`, `tag_prefix`, `shipped_by`, `embeds` and either `command` or `refused`, and `unreadable` lists the manifests that could not be read.
+
 ## Examples
 
 ```bash
@@ -253,11 +300,16 @@ bumpit next --module cmd/tool             # bumpit next -g cmd/tool
 bumpit next --module web/homepage         # a module bumpit.yaml declares
 bumpit modules --output json              # bumpit modules -o json
 bumpit tag --all-modules                  # bumpit tag -M
+bumpit init                               # create bumpit.yaml and propose modules
+bumpit modules add web/homepage -B        # bumpit modules add web/homepage --shipped-by-none
+bumpit config set tagMessage "Release"    # write a key of bumpit.yaml
 ```
 
 ## Configuration
 
 `bumpit` looks for `bumpit.yaml` or `.bumpit.yaml` in the target repository. You can also pass an explicit path with `--config`. The `modules` key is read from the config at the top of the repository; see "Modules without a go.mod".
+
+`bumpit config get`, `set` and `unset` read and write one key of the config `--config` names, else of the one found in `--repo`; `set` creates `bumpit.yaml` there when there is none. Keys are compared without case. `get` prints the value as the file writes it, an empty line for a key written with no value, and `get` and `unset` fail on a key the file does not hold, with `<key> is not set in <file>`. `allowDirty` and `promote` take `true` or `false`; the other values are written as YAML strings, quoted when YAML would read them as something else. `set` keeps the comment after the value, and both edit the file as `bumpit modules add` does, line by line and only once the new text is proved, so they can repair a value the config cannot take. The `modules` are edited with `bumpit modules add`, `set` and `remove`.
 
 Precedence is:
 
