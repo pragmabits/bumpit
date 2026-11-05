@@ -24,7 +24,7 @@ func bindTagMatchFlag(command *cobra.Command, target *string) {
 }
 
 func bindModuleFlag(command *cobra.Command, target *string) {
-	command.Flags().StringVarP(target, "module", "g", "", "directory of the module to version, relative to --repo: a Go module, or one bumpit.yaml declares; sets the tag pattern and the commits read")
+	command.Flags().StringVarP(target, "module", "g", "", "name of the module to version, or a directory of it relative to --repo: a Go module, or one bumpit.yaml declares; sets the tag pattern and the commits read")
 }
 
 func bindStartVersionFlag(command *cobra.Command, target *string) {

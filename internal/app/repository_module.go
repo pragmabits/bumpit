@@ -12,24 +12,33 @@ import (
 )
 
 // repositoryModule is a module bumpit versions: a Go module, found by its
-// go.mod, or a module bumpit.yaml declares, which has none.
+// go.mod, which bumpit.yaml may also list to name it, or a module bumpit.yaml
+// declares, which has none.
 type repositoryModule struct {
-	directory string
-	tagPrefix string
+	// name is what the commands and shippedBy call the module: the name
+	// bumpit.yaml gives it, else its directory.
+	name string
+	// named reports a name bumpit.yaml gives, which a command line can write
+	// apart from a path.
+	named bool
+	// directories are the directories the module owns. A Go module has one.
+	directories []string
+	tagPrefix   string
 	// goModule is the go.mod of a Go module, nil for a declared module.
 	goModule *gomod.Module
 	// paths are the files and directories outside its directory that a
 	// declared module also reads.
 	paths []string
-	// shippedBy lists the directories of the modules whose release also
-	// carries a declared module.
+	// shippedBy calls the modules whose release also carries a declared module,
+	// each by its name or, when it has none, its directory, and is nil when
+	// bumpit.yaml says nothing of them.
 	shippedBy []string
 	// node derives the paths outside its directory that a declared module
 	// reads because of its package.json, nil for a Go module.
 	node *nodePackages
-	// goCode is the Go code of the enclosing Go module that a declared
-	// directory holds.
-	goCode goCodeInDirectory
+	// goCode is the Go code of the Go module around it that each directory of
+	// a declared module holds, by directory.
+	goCode map[string]goCodeInDirectory
 }
 
 // goCodeInDirectory is the Go code a declared directory holds for the Go
@@ -43,20 +52,132 @@ type goCodeInDirectory struct {
 }
 
 func goRepositoryModule(module gomod.Module) repositoryModule {
-	return repositoryModule{directory: module.Directory, tagPrefix: module.TagPrefix(), goModule: &module}
+	return repositoryModule{name: module.Directory, directories: []string{module.Directory}, tagPrefix: module.TagPrefix(), goModule: &module}
 }
 
 func declaredRepositoryModule(declaration ModuleDeclaration) repositoryModule {
-	return repositoryModule{
-		directory: declaration.Directory,
-		tagPrefix: declaration.prefix(),
-		paths:     declaration.Paths,
-		shippedBy: *declaration.ShippedBy,
+	module := repositoryModule{
+		name:        declaration.identity(),
+		named:       declaration.Name != "",
+		directories: declaration.Directories,
+		tagPrefix:   declaration.prefix(),
+		paths:       declaration.Paths,
 	}
+	if declaration.ShippedBy != nil {
+		module.shippedBy = *declaration.ShippedBy
+	}
+	return module
 }
 
-// declared reports a module bumpit.yaml declares, which has no go.mod.
-func (r repositoryModule) declared() bool {
+// applyGoEntry gives the Go module what the entry that lists it says, which is
+// only its name, and lists what else the entry says: the rest of a Go module
+// comes from its go.mod.
+func applyGoEntry(module *repositoryModule, declaration ModuleDeclaration) []Finding {
+	if declaration.Name != "" {
+		module.name, module.named = declaration.Name, true
+	}
+	name := declaration.identity()
+	switch {
+	case len(declaration.Directories) > 1:
+		return []Finding{{
+			Rule:    ruleGoEntryDirectories,
+			Subject: name,
+			What:    module.directories[0] + " holds a go.mod",
+			Why:     "a Go module has one directory",
+			How:     "give the other directories a module of their own",
+		}}
+	case declaration.TagPrefix != "" || len(declaration.Paths) > 0 || declaration.ShippedBy != nil:
+		return []Finding{{
+			Rule:    ruleGoEntryKeys,
+			Subject: name,
+			What:    "the directory holds a go.mod, so it is a Go module",
+			Why:     "it takes only directories and name, and its go.mod says the rest",
+			How:     "take out tagPrefix, paths and shippedBy",
+		}}
+	}
+	return nil
+}
+
+// assembleModules joins the Go modules and what declarations says of them with
+// the modules declarations declares, the root one first and the others by
+// directory, and lists what the go.mod files contradict of declarations. A
+// declaration that owns no directory is left out: it is nowhere in the repository.
+func assembleModules(goModules []gomod.Module, declarations []ModuleDeclaration) ([]repositoryModule, []Finding) {
+	modules := make([]repositoryModule, 0, len(goModules)+len(declarations))
+	for _, module := range goModules {
+		modules = append(modules, goRepositoryModule(module))
+	}
+	var findings []Finding
+	for _, declaration := range declarations {
+		if len(declaration.Directories) == 0 {
+			continue
+		}
+		index := slices.IndexFunc(modules[:len(goModules)], func(module repositoryModule) bool {
+			return slices.Contains(declaration.Directories, module.directories[0])
+		})
+		if index >= 0 {
+			findings = append(findings, applyGoEntry(&modules[index], declaration)...)
+			continue
+		}
+		if declaration.ShippedBy == nil {
+			findings = append(findings, Finding{
+				Rule:    ruleShippedByMissing,
+				Subject: declaration.identity(),
+				What:    "shippedBy is required",
+				Why:     "bumpit cannot always tell whether the release of another module carries it",
+				How:     "list the modules that carry it, or write shippedBy: []; if its go.mod is gone, bumpit modules remove takes the entry out",
+			})
+		}
+		modules = append(modules, declaredRepositoryModule(declaration))
+	}
+	slices.SortStableFunc(modules, func(left, right repositoryModule) int {
+		return compareDirectories(left.directories[0], right.directories[0])
+	})
+	return modules, findings
+}
+
+// owns reports whether directory is one of the directories of the module.
+func (r repositoryModule) owns(directory string) bool {
+	return slices.Contains(r.directories, directory)
+}
+
+// holds reports whether entry, a file or a directory, is a directory of the
+// module or lies under one.
+func (r repositoryModule) holds(entry string) bool {
+	return slices.ContainsFunc(r.directories, func(directory string) bool { return within(entry, directory) })
+}
+
+// surrounds reports whether directory lies under a directory of the module.
+func (r repositoryModule) surrounds(directory string) bool {
+	return slices.ContainsFunc(r.directories, func(own string) bool { return nestedIn(directory, own) })
+}
+
+// moduleNamed is the index among modules of the first one called name, -1 when
+// none is.
+func moduleNamed(modules []repositoryModule, name string) int {
+	return slices.IndexFunc(modules, func(module repositoryModule) bool { return module.name == name })
+}
+
+// identity is what a command line can call the module.
+func (r repositoryModule) identity() moduleIdentity {
+	identity := moduleIdentity{directories: r.directories}
+	if r.named {
+		identity.name = r.name
+	}
+	return identity
+}
+
+func identitiesOf(modules []repositoryModule) []moduleIdentity {
+	identities := make([]moduleIdentity, 0, len(modules))
+	for _, module := range modules {
+		identities = append(identities, module.identity())
+	}
+	return identities
+}
+
+// withoutGoMod reports a module that exists because bumpit.yaml declares it,
+// since no go.mod makes it one.
+func (r repositoryModule) withoutGoMod() bool {
 	return r.goModule == nil
 }
 
@@ -72,35 +193,32 @@ func (r repositoryModule) modulePath() string {
 // one first and the others by directory: its Go modules and the modules
 // declarations declares. It refuses a declaration the repository contradicts.
 func discoverRepositoryModules(client gitx.Client, declarations []ModuleDeclaration) ([]repositoryModule, string, error) {
-	return discoverRepositoryModulesIn(client, declarations, nil)
+	return discoverRepositoryModulesIn(newRepositorySnapshot(client), declarations)
 }
 
-// discoverRepositoryModulesIn is discoverRepositoryModules with tracked, the
-// tracked files of the repository, listed already, or nil to list them when
-// a declaration needs them.
-func discoverRepositoryModulesIn(client gitx.Client, declarations []ModuleDeclaration, tracked *trackedTree) ([]repositoryModule, string, error) {
+// discoverRepositoryModulesIn is discoverRepositoryModules over what a run has
+// read of the repository.
+func discoverRepositoryModulesIn(snapshot *repositorySnapshot, declarations []ModuleDeclaration) ([]repositoryModule, string, error) {
 	if err := validateModuleDeclarations(declarations); err != nil {
 		return nil, "", err
 	}
-	goModules, top, err := discoverModules(client)
+	top, err := snapshot.top()
+	if err != nil {
+		return nil, "", err
+	}
+	goModules, err := snapshot.goModules()
 	if err != nil {
 		return nil, "", err
 	}
 
-	modules := make([]repositoryModule, 0, len(goModules)+len(declarations))
-	for _, module := range goModules {
-		modules = append(modules, goRepositoryModule(module))
+	modules, findings := assembleModules(goModules, declarations)
+	if err := firstFinding(append(findings, nameFindings(modules)...)); err != nil {
+		return nil, "", fmt.Errorf("modules: %w", err)
 	}
-	for _, declaration := range declarations {
-		modules = append(modules, declaredRepositoryModule(declaration))
-	}
-	slices.SortStableFunc(modules, func(left, right repositoryModule) int {
-		return compareDirectories(left.directory, right.directory)
-	})
-	if !slices.ContainsFunc(modules, repositoryModule.declared) {
+	if !slices.ContainsFunc(modules, repositoryModule.withoutGoMod) {
 		return modules, top, nil
 	}
-	if err := checkAndReadDeclared(client, top, modules, tracked); err != nil {
+	if err := checkAndReadDeclared(snapshot, top, modules); err != nil {
 		return nil, "", err
 	}
 	return modules, top, nil
@@ -108,27 +226,77 @@ func discoverRepositoryModulesIn(client gitx.Client, declarations []ModuleDeclar
 
 // checkAndReadDeclared refuses the declared modules the repository
 // contradicts, and gives the others what they read: their Node.js packages
-// and the Go code in their directories. tracked is the tracked files of the
-// repository, or nil to list them.
-func checkAndReadDeclared(client gitx.Client, top string, modules []repositoryModule, tracked *trackedTree) error {
-	if tracked == nil {
-		listed, err := listTracked(client)
-		if err != nil {
-			return err
-		}
-		tracked = &listed
+// and the Go code in their directories.
+func checkAndReadDeclared(snapshot *repositorySnapshot, top string, modules []repositoryModule) error {
+	tracked, err := snapshot.tracked()
+	if err != nil {
+		return err
 	}
-	if err := checkDeclaredModules(client, *tracked, top, modules); err != nil {
+	findings, err := declaredModuleFindings(snapshot, tracked, modules)
+	if err != nil {
+		return err
+	}
+	if err := firstFinding(findings); err != nil {
 		return fmt.Errorf("modules: %w", err)
 	}
-	node := newNodePackages(top, *tracked)
+	if err := checkGoShipping(tracked, top, modules, snapshot.embeds); err != nil {
+		return fmt.Errorf("modules: %w", err)
+	}
+	readDeclared(top, tracked, modules)
+	return nil
+}
+
+// readDeclared gives the declared modules what they read: their Node.js
+// packages and the Go code in their directories.
+func readDeclared(top string, tracked trackedTree, modules []repositoryModule) {
+	node := newNodePackages(top, tracked)
 	for index := range modules {
-		if modules[index].declared() {
+		if modules[index].withoutGoMod() {
 			modules[index].node = node
-			modules[index].goCode = findGoCode(top, *tracked, modules[index], modules)
+			modules[index].goCode = findGoCode(top, tracked, modules[index], modules)
 		}
 	}
-	return nil
+}
+
+// repositoryReport is the modules of the repository, as far as a config lets
+// them be read, and what the repository contradicts of that config.
+type repositoryReport struct {
+	modules  []repositoryModule
+	tracked  trackedTree
+	findings []Finding
+}
+
+// repositoryFindings lists all that a run would refuse of declarations, where a
+// run stops at the first of them. An error is a failure to ask, such as a go.mod
+// that cannot be read. The modules it returns have yet to read what they read,
+// which a proof has no use for.
+func repositoryFindings(snapshot *repositorySnapshot, declarations []ModuleDeclaration) (repositoryReport, error) {
+	top, err := snapshot.top()
+	if err != nil {
+		return repositoryReport{}, err
+	}
+	goModules, err := snapshot.goModules()
+	if err != nil {
+		return repositoryReport{}, err
+	}
+	modules, findings := assembleModules(goModules, declarations)
+	findings = append(findings, nameFindings(modules)...)
+
+	tracked, err := snapshot.tracked()
+	if err != nil {
+		return repositoryReport{}, err
+	}
+	declaredFindings, err := declaredModuleFindings(snapshot, tracked, modules)
+	if err != nil {
+		return repositoryReport{}, err
+	}
+	shipped, err := shippingFindings(tracked, top, modules, snapshot.embeds)
+	if err != nil {
+		return repositoryReport{}, err
+	}
+	findings = append(append(findings, declaredFindings...), shipped...)
+	findings = append(findings, packageFindings(snapshot, top, tracked, modules)...)
+	return repositoryReport{modules: modules, tracked: tracked, findings: findings}, nil
 }
 
 // keptDerivedPaths leaves out of inputs what the module reads already: a path
@@ -137,7 +305,7 @@ func checkAndReadDeclared(client gitx.Client, top string, modules []repositoryMo
 func keptDerivedPaths(module repositoryModule, inputs []string, modules []repositoryModule) []string {
 	var kept []string
 	for _, entry := range inputs {
-		inside := within(entry, module.directory) && !insideNestedModule(entry, module, modules)
+		inside := module.holds(entry) && !insideNestedModule(entry, module, modules)
 		if !inside && !slices.Contains(module.paths, entry) {
 			kept = append(kept, entry)
 		}
@@ -159,18 +327,27 @@ func (r repositoryModule) readPaths(modules []repositoryModule) []string {
 	return append(slices.Clone(r.paths), derived...)
 }
 
-// findGoCode tells which Go code the declared directory of module holds for
-// the Go module around it: its .go files that lie in no nested Go module and
-// in no directory the go command leaves out, and among them those no build
-// compiles.
-func findGoCode(top string, tracked trackedTree, module repositoryModule, modules []repositoryModule) goCodeInDirectory {
-	enclosing := deepestModule(module.directory, modules, isGoModule)
+// findGoCode tells which Go code each directory of module holds for the Go
+// module around it, since each may have another one around it.
+func findGoCode(top string, tracked trackedTree, module repositoryModule, modules []repositoryModule) map[string]goCodeInDirectory {
+	found := make(map[string]goCodeInDirectory, len(module.directories))
+	for _, directory := range module.directories {
+		found[directory] = findGoCodeIn(top, tracked, directory, modules)
+	}
+	return found
+}
+
+// findGoCodeIn tells which Go code a declared directory holds for the Go
+// module around it: its .go files that lie in no nested Go module and in no
+// directory the go command leaves out, and among them those no build compiles.
+func findGoCodeIn(top string, tracked trackedTree, directory string, modules []repositoryModule) goCodeInDirectory {
+	enclosing := deepestGoModule(directory, modules)
 	var found goCodeInDirectory
-	if enclosing == nil || module.directory == "." {
+	if enclosing == nil || directory == "." {
 		return found
 	}
 	for _, file := range tracked.files {
-		if !goFileOf(file, module, *enclosing, modules) {
+		if !goFileOf(file, directory, *enclosing, modules) {
 			continue
 		}
 		if gomod.NeverCompiled(filepath.Join(top, filepath.FromSlash(file))) {
@@ -182,243 +359,28 @@ func findGoCode(top string, tracked trackedTree, module repositoryModule, module
 	return found
 }
 
-// goFileOf reports whether file is a .go file of the declared directory of
-// module that belongs to the Go module enclosing, rather than to a Go module
-// nested in the directory, and that the go command does not leave out by its
-// name or the name of a directory above it.
-func goFileOf(file string, module, enclosing repositoryModule, modules []repositoryModule) bool {
-	if !strings.HasSuffix(file, ".go") || !within(file, module.directory) {
+// goFileOf reports whether file is a .go file of the declared directory that
+// belongs to the Go module enclosing, rather than to a Go module nested in the
+// directory, and that the go command does not leave out by its name or the
+// name of a directory above it.
+func goFileOf(file, directory string, enclosing repositoryModule, modules []repositoryModule) bool {
+	if !strings.HasSuffix(file, ".go") || !within(file, directory) {
 		return false
 	}
-	owner := deepestModule(file, modules, isGoModule)
-	if owner == nil || owner.directory != enclosing.directory {
+	owner := deepestGoModule(file, modules)
+	if owner == nil || owner.name != enclosing.name {
 		return false
 	}
 	return !gomod.Ignored(path.Dir(file)) && !gomod.Ignored(path.Base(file))
-}
-
-func isGoModule(module repositoryModule) bool {
-	return !module.declared()
-}
-
-// checkDeclaredModules refuses a declared module the repository contradicts,
-// and one that Go code ships while bumpit.yaml does not say so.
-func checkDeclaredModules(client gitx.Client, tracked trackedTree, top string, modules []repositoryModule) error {
-	for _, module := range modules {
-		if !module.declared() {
-			continue
-		}
-		if err := checkDeclaredModule(client, tracked, module, modules); err != nil {
-			return fmt.Errorf("%s: %w", module.directory, err)
-		}
-	}
-	return checkGoShipping(tracked, top, modules)
-}
-
-func checkDeclaredModule(client gitx.Client, tracked trackedTree, module repositoryModule, modules []repositoryModule) error {
-	if slices.ContainsFunc(modules, func(other repositoryModule) bool { return !other.declared() && other.directory == module.directory }) {
-		return fmt.Errorf("the directory holds a go.mod: it is a Go module, versioned by its go.mod")
-	}
-	for _, entry := range append([]string{module.directory}, module.paths...) {
-		if !tracked.holds(entry) {
-			return fmt.Errorf("%s matches no tracked file", entry)
-		}
-	}
-	for _, entry := range module.paths {
-		if within(entry, module.directory) && !insideNestedModule(entry, module, modules) {
-			return fmt.Errorf("paths lists %s, inside its own directory, which the module reads already", entry)
-		}
-	}
-	if err := checkCarriers(module, modules); err != nil {
-		return err
-	}
-	return checkTagPrefix(client, module, modules)
-}
-
-// checkCarriers refuses a carrier that is no module of the repository, and a
-// cycle of carriers: a module that, through the modules it is shipped by,
-// carries itself, which no release can mean.
-func checkCarriers(module repositoryModule, modules []repositoryModule) error {
-	for _, carrier := range module.shippedBy {
-		if !slices.ContainsFunc(modules, func(other repositoryModule) bool { return other.directory == carrier }) {
-			return fmt.Errorf("shippedBy lists %s, which is no module of the repository", carrier)
-		}
-	}
-	if carriersOf(module, modules)[module.directory] {
-		return fmt.Errorf("shippedBy forms a cycle: through %s, the module carries itself", strings.Join(module.shippedBy, ", "))
-	}
-	return nil
 }
 
 // insideNestedModule reports whether entry lies in a module nested in module,
 // whose files module does not read unless its paths name them.
 func insideNestedModule(entry string, module repositoryModule, modules []repositoryModule) bool {
 	return slices.ContainsFunc(modules, func(other repositoryModule) bool {
-		return nestedIn(other.directory, module.directory) && within(entry, other.directory)
-	})
-}
-
-// checkTagPrefix refuses a tag prefix that cannot tell the tags of the module
-// from those of another: the same prefix, or one that continues the other
-// with what can start a version, as v1 continues v, which makes v10.0.0 a
-// version of both. It also refuses a prefix git takes in no tag name.
-func checkTagPrefix(client gitx.Client, module repositoryModule, modules []repositoryModule) error {
-	prefix := module.tagPrefix
-	if strings.HasPrefix(prefix, "-") {
-		return fmt.Errorf("its tag prefix %s starts with -, which git takes for an option", prefix)
-	}
-	for _, other := range modules {
-		switch {
-		case other.directory == module.directory:
-		case other.tagPrefix == prefix:
-			return fmt.Errorf("its tag prefix %s is the one of %s too, so their tags could not be told apart", prefix, other.directory)
-		case continuesWithVersion(prefix, other.tagPrefix):
-			return fmt.Errorf("its tag prefix %s continues %s, the one of %s, with what can start a version, so a tag could be a version of both", prefix, other.tagPrefix, other.directory)
-		case continuesWithVersion(other.tagPrefix, prefix):
-			return fmt.Errorf("the tag prefix %s of %s continues its own, %s, with what can start a version, so a tag could be a version of both", other.tagPrefix, other.directory, prefix)
-		}
-	}
-	valid, err := client.ValidTagName(prefix + "0.0.0")
-	if err != nil {
-		return err
-	}
-	if !valid {
-		return fmt.Errorf("its tag prefix %s does not make a valid tag name", prefix)
-	}
-	return nil
-}
-
-// continuesWithVersion reports whether longer is shorter followed by what can
-// start a semantic version: a digit, then only characters a version holds.
-func continuesWithVersion(longer, shorter string) bool {
-	rest, found := strings.CutPrefix(longer, shorter)
-	if !found || rest == "" || rest[0] < '0' || rest[0] > '9' {
-		return false
-	}
-	return !strings.ContainsFunc(rest, func(character rune) bool { return !isVersionCharacter(character) })
-}
-
-func isVersionCharacter(character rune) bool {
-	switch {
-	case character >= '0' && character <= '9', character >= 'a' && character <= 'z', character >= 'A' && character <= 'Z':
-		return true
-	default:
-		return strings.ContainsRune(".+-", character)
-	}
-}
-
-// checkGoShipping refuses a declared module that a Go module ships through a
-// //go:embed pattern that reaches its files, when that Go module is not among
-// the modules shippedBy says carry it. The .go files in the declared
-// directory are not shipping: they are the Go module's own code, which it
-// reads as its own. No pattern of a nested Go module leaves it, so none ships
-// a declared root module.
-func checkGoShipping(tracked trackedTree, top string, modules []repositoryModule) error {
-	declared := slices.DeleteFunc(slices.Clone(modules), func(module repositoryModule) bool {
-		return !module.declared() || module.directory == "."
-	})
-	return visitShipping(tracked, top, declared, modules, embedCache{}, func(found shipping) error {
-		if carriersOf(found.module, modules)[found.goModule.directory] {
-			return nil
-		}
-		return fmt.Errorf("%s: %s:%s embeds %s into the module %s, which then ships %s; add %s to its shippedBy", found.module.directory, found.file, found.embed.Place(), found.embed.Pattern, found.goModule.directory, found.module.directory, found.goModule.directory)
-	})
-}
-
-// shipping is a //go:embed pattern of a Go file by which its Go module
-// ships a declared module.
-type shipping struct {
-	module   repositoryModule
-	goModule repositoryModule
-	file     string
-	embed    gomod.Embed
-}
-
-// embedCache keeps the //go:embed patterns of each Go file read, so that a
-// file is read once however many modules ask about it.
-type embedCache map[string][]gomod.Embed
-
-func (c embedCache) read(top, file string) ([]gomod.Embed, error) {
-	if embeds, read := c[file]; read {
-		return embeds, nil
-	}
-	embeds, err := gomod.FileEmbeds(filepath.Join(top, filepath.FromSlash(file)))
-	if err == nil {
-		c[file] = embeds
-	}
-	return embeds, err
-}
-
-// findShipping lists every //go:embed pattern by which a Go module ships one
-// of declared, in the order of the files and of the patterns in each.
-func findShipping(tracked trackedTree, top string, declared, modules []repositoryModule, cache embedCache) ([]shipping, error) {
-	var shippings []shipping
-	err := visitShipping(tracked, top, declared, modules, cache, func(found shipping) error {
-		shippings = append(shippings, found)
-		return nil
-	})
-	return shippings, err
-}
-
-// visitShipping calls visit with every //go:embed pattern by which a Go
-// module ships one of declared, in the order of the files and of the
-// patterns in each, and stops at the first error, before it reads a later
-// file. A Go file ships the declared modules it can reach: those its
-// package lies in, and those under the directory of its package, when no
-// nested Go module stands between them, since the go command embeds no file
-// of another module. A test file ships nothing.
-func visitShipping(tracked trackedTree, top string, declared, modules []repositoryModule, cache embedCache, visit func(shipping) error) error {
-	if len(declared) == 0 {
-		return nil
-	}
-	for _, file := range tracked.files {
-		packageDirectory := path.Dir(file)
-		goModule := deepestModule(file, modules, isGoModule)
-		if !strings.HasSuffix(file, ".go") || strings.HasSuffix(file, "_test.go") || gomod.Ignored(packageDirectory) || goModule == nil {
-			continue
-		}
-		reachable := reachableModules(packageDirectory, *goModule, declared, modules)
-		if len(reachable) == 0 {
-			continue
-		}
-		embeds, err := cache.read(top, file)
-		if err != nil {
-			return err
-		}
-		if err := visitFile(shipping{goModule: *goModule, file: file}, embeds, reachable, modules, visit); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// visitFile calls visit with each pattern of the Go file of found that
-// reaches one of reachable.
-func visitFile(found shipping, embeds []gomod.Embed, reachable, modules []repositoryModule, visit func(shipping) error) error {
-	for _, module := range reachable {
-		nested := nestedDirectories(module, modules)
-		for _, embed := range embeds {
-			if !gomod.PatternReaches(path.Dir(found.file), embed.Pattern, module.directory, nested) {
-				continue
-			}
-			found.module, found.embed = module, embed
-			if err := visit(found); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// reachableModules lists, among declared, the modules the //go:embed
-// patterns of a package of goModule in packageDirectory can reach: those the
-// package lies in or that lie under it, with goModule the nearest Go module
-// around them.
-func reachableModules(packageDirectory string, goModule repositoryModule, declared, modules []repositoryModule) []repositoryModule {
-	return slices.DeleteFunc(slices.Clone(declared), func(module repositoryModule) bool {
-		nearest := deepestModule(module.directory, modules, isGoModule)
-		sameGoModule := nearest != nil && nearest.directory == goModule.directory
-		return !sameGoModule || !within(packageDirectory, module.directory) && !within(module.directory, packageDirectory)
+		return slices.ContainsFunc(other.directories, func(directory string) bool {
+			return module.surrounds(directory) && within(entry, directory)
+		})
 	})
 }
 
@@ -435,7 +397,7 @@ func carriersOf(module repositoryModule, modules []repositoryModule) map[string]
 			continue
 		}
 		carriers[carrier] = true
-		index := slices.IndexFunc(modules, func(other repositoryModule) bool { return other.declared() && other.directory == carrier })
+		index := slices.IndexFunc(modules, func(other repositoryModule) bool { return other.withoutGoMod() && other.name == carrier })
 		if index >= 0 {
 			pending = append(pending, modules[index].shippedBy...)
 		}
@@ -443,28 +405,30 @@ func carriersOf(module repositoryModule, modules []repositoryModule) map[string]
 	return carriers
 }
 
-// deepestModule is the module, among those keep accepts, whose directory
-// holds file most closely: the one that owns it. nil when none holds it.
-func deepestModule(file string, modules []repositoryModule, keep func(repositoryModule) bool) *repositoryModule {
+// deepestGoModule is the Go module whose directory holds file most closely:
+// the one the go command says owns it. nil when none holds it.
+func deepestGoModule(file string, modules []repositoryModule) *repositoryModule {
 	var deepest *repositoryModule
 	for index := range modules {
 		module := &modules[index]
-		if !keep(*module) || !within(file, module.directory) {
+		if module.withoutGoMod() || !within(file, module.directories[0]) {
 			continue
 		}
-		if deepest == nil || len(module.directory) > len(deepest.directory) || deepest.directory == "." {
+		if deepest == nil || len(module.directories[0]) > len(deepest.directories[0]) || deepest.directories[0] == "." {
 			deepest = module
 		}
 	}
 	return deepest
 }
 
-// nestedDirectories lists the directories of the modules nested in module.
-func nestedDirectories(module repositoryModule, modules []repositoryModule) []string {
+// nestedDirectories lists the directories of the modules nested in directory.
+func nestedDirectories(directory string, modules []repositoryModule) []string {
 	var nested []string
 	for _, other := range modules {
-		if nestedIn(other.directory, module.directory) {
-			nested = append(nested, other.directory)
+		for _, candidate := range other.directories {
+			if nestedIn(candidate, directory) {
+				nested = append(nested, candidate)
+			}
 		}
 	}
 	return nested

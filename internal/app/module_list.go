@@ -8,17 +8,40 @@ import (
 // ModuleRelease is the next release of one module, as bumpit modules lists
 // it. A module whose plan failed carries the error instead.
 type ModuleRelease struct {
-	Directory  string `json:"directory"`
-	Path       string `json:"path,omitempty"`
-	CurrentTag string `json:"current_tag,omitempty"`
-	NextTag    string `json:"next_tag,omitempty"`
-	HasRelease bool   `json:"has_release"`
+	// Name is what the commands call the module, left out for a Go module
+	// bumpit.yaml gives no name, which its directory names.
+	Name string `json:"name,omitempty"`
+	// Directory is the directory of a Go module.
+	Directory string `json:"directory,omitempty"`
+	// Directories are the directories of a module with no go.mod, which also
+	// has no module path.
+	Directories []string `json:"directories,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	CurrentTag  string   `json:"current_tag,omitempty"`
+	NextTag     string   `json:"next_tag,omitempty"`
+	HasRelease  bool     `json:"has_release"`
 	// Hold is why the release waits, nil when it does not.
 	Hold  *Hold  `json:"hold,omitempty"`
 	Error string `json:"error,omitempty"`
-	// Declared reports a module bumpit.yaml declares, which has no go.mod
-	// and no module path.
-	Declared bool `json:"declared,omitempty"`
+}
+
+func newModuleRelease(module repositoryModule) ModuleRelease {
+	if module.withoutGoMod() {
+		return ModuleRelease{Name: module.name, Directories: module.directories}
+	}
+	release := ModuleRelease{Directory: module.goModule.Directory, Path: module.modulePath()}
+	if module.named {
+		release.Name = module.name
+	}
+	return release
+}
+
+// label is what the commands call the module.
+func (r ModuleRelease) label() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.Directory
 }
 
 // ListModules plans the next release of every module of the repository, its
@@ -41,14 +64,14 @@ func ListModules(opts Options) ([]ModuleRelease, error) {
 	newest := map[string]semver.Version{}
 	for _, module := range modules {
 		scope := &moduleScope{module: module, modules: modules}
-		release := ModuleRelease{Directory: module.directory, Path: module.modulePath(), Declared: module.declared()}
+		release := newModuleRelease(module)
 		plan, err := planRelease(topClient, scope, otherModulePrefixes(scope, modules, ""), Options{StartVersion: opts.StartVersion})
 		if err != nil {
 			release.Error = err.Error()
 		}
 		release.CurrentTag, release.NextTag, release.HasRelease = plan.CurrentTag, plan.NextTag, plan.HasRelease
 		releases = append(releases, release)
-		if version, ok := plan.newestVersion(); ok && !module.declared() {
+		if version, ok := plan.newestVersion(); ok && !module.withoutGoMod() {
 			newest[module.goModule.Path] = version
 		}
 	}

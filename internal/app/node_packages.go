@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/pragmabits/bumpit/internal/nodejs"
 )
@@ -34,18 +35,28 @@ func (n *nodePackages) derive(module repositoryModule, modules []repositoryModul
 	if n == nil {
 		return nil, nil
 	}
-	if found, known := n.derived[module.directory]; known {
+	if found, known := n.derived[module.name]; known {
 		return found.paths, found.err
 	}
-	var found derivation
-	inputs, err := n.repository().Inputs(module.directory)
-	if err != nil {
-		found.err = fmt.Errorf("%s: %w", module.directory, err)
-	} else {
-		found.paths = keptDerivedPaths(module, inputs, modules)
-	}
-	n.derived[module.directory] = found
+	found := n.deriveDirectories(module, modules)
+	n.derived[module.name] = found
 	return found.paths, found.err
+}
+
+// deriveDirectories joins what the package.json files of each directory of
+// module derive, sorted.
+func (n *nodePackages) deriveDirectories(module repositoryModule, modules []repositoryModule) derivation {
+	var found derivation
+	for _, directory := range module.directories {
+		inputs, err := n.repository().Inputs(directory)
+		if err != nil {
+			return derivation{err: fmt.Errorf("%s: %w", module.name, err)}
+		}
+		found.paths = append(found.paths, keptDerivedPaths(module, inputs, modules)...)
+	}
+	slices.Sort(found.paths)
+	found.paths = slices.Compact(found.paths)
+	return found
 }
 
 // repository is the Node.js packages of the repository, read the first time

@@ -27,7 +27,7 @@ func TestCommandFlagShorthands(t *testing.T) {
 		"module":        "g",
 	}
 	editShorthands := map[string]string{"config": "c", "repo": "r"}
-	declarationShorthands := withShorthands(editShorthands, map[string]string{"tag-prefix": "T", "path": "f", "shipped-by": "b", "shipped-by-none": "B"})
+	declarationShorthands := withShorthands(editShorthands, map[string]string{"name": "e", "tag-prefix": "T", "path": "f", "shipped-by": "b"})
 
 	expected := map[string]map[string]string{
 		"bumpit latest":         {"config": "c", "repo": "r", "match": "t", "output": "o", "all": "a", "no-prefix": "n", "module": "g"},
@@ -36,8 +36,9 @@ func TestCommandFlagShorthands(t *testing.T) {
 		"bumpit tag":            withShorthands(releaseShorthands, map[string]string{"message": "m", "all-modules": "M"}),
 		"bumpit modules":        {"config": "c", "repo": "r", "output": "o", "allow-dirty": "d"},
 		"bumpit modules add":    declarationShorthands,
-		"bumpit modules set":    withShorthands(declarationShorthands, map[string]string{"no-paths": "N"}),
+		"bumpit modules set":    withShorthands(declarationShorthands, map[string]string{"directory": "D", "no-paths": "N", "shipped-by-none": "B"}),
 		"bumpit modules remove": editShorthands,
+		"bumpit modules check":  {"config": "c", "repo": "r", "output": "o"},
 		"bumpit config":         {},
 		"bumpit config get":     editShorthands,
 		"bumpit config set":     editShorthands,
@@ -269,7 +270,7 @@ func TestApplyConfigPassesModuleDeclarations(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "bumpit.yaml")
-	if err := os.WriteFile(configPath, []byte("modules:\n  - directory: web\n    shippedBy: []\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("modules:\n  - directories: [web]\n    shippedBy: []\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 	want := []ModuleDeclaration{declare("web", "", nil)}
@@ -319,9 +320,9 @@ func TestApplyConfigReadsDeclarationsAtTheTop(t *testing.T) {
 	repositoryPath := initRepository(t)
 	commitNewFile(t, repositoryPath, "web/homepage/index.html", "homepage", "feat: add the homepage")
 	commitNewFile(t, repositoryPath, "docs/guide.md", "guide", "docs: write the guide")
-	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directory: web/homepage\n    shippedBy: []\n")
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directories: [web/homepage]\n    shippedBy: []\n")
 	elsewhere := t.TempDir()
-	writeConfig(t, filepath.Join(elsewhere, "docs.yaml"), "repository: "+repositoryPath+"\nmodules:\n  - directory: docs\n    shippedBy: []\n")
+	writeConfig(t, filepath.Join(elsewhere, "docs.yaml"), "repository: "+repositoryPath+"\nmodules:\n  - directories: [docs]\n    shippedBy: []\n")
 	writeConfig(t, filepath.Join(elsewhere, "none.yaml"), "repository: "+repositoryPath+"\nmodules: []\n")
 	writeConfig(t, filepath.Join(elsewhere, "silent.yaml"), "repository: "+repositoryPath+"\ntagMessage: Release\n")
 	web := filepath.Join(repositoryPath, "web")
@@ -344,7 +345,7 @@ func TestApplyConfigReadsDeclarationsAtTheTop(t *testing.T) {
 		}
 		var got []string
 		for _, declaration := range flags.declarations {
-			got = append(got, declaration.Directory)
+			got = append(got, declaration.Directories...)
 		}
 		if !slices.Equal(got, run.want) {
 			t.Errorf("%s: declarations %q, want %q", run.name, got, run.want)
@@ -356,7 +357,7 @@ func TestApplyConfigReadsDeclarationsAtTheTop(t *testing.T) {
 		t.Errorf("a config of a subdirectory with an empty modules: error = %v, declarations %v", err, flags.declarations)
 	}
 
-	writeConfig(t, filepath.Join(web, "bumpit.yaml"), "modules:\n  - directory: web/homepage\n    shippedBy: []\n")
+	writeConfig(t, filepath.Join(web, "bumpit.yaml"), "modules:\n  - directories: [web/homepage]\n    shippedBy: []\n")
 	_, err := applyReleaseConfig(map[string]string{"repo": web})
 	want := filepath.Join(web, "bumpit.yaml") + " declares modules, which bumpit reads from the bumpit.yaml at the top of the repository: move them to " + filepath.Join(repositoryPath, "bumpit.yaml")
 	if err == nil || err.Error() != want {
@@ -410,18 +411,18 @@ func TestApplyConfigReadsOnlyTheModulesOfTheTop(t *testing.T) {
 		t.Errorf("a top config with invalid keys and no modules: error = %v, declarations %v", err, flags.declarations)
 	}
 
-	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "output: xml\nmodules:\n  - directory: sub\n    shippedBy: []\n")
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "output: xml\nmodules:\n  - directories: [sub]\n    shippedBy: []\n")
 	if flags, err := applyReleaseConfig(map[string]string{"repo": sub}); err != nil || len(flags.declarations) != 1 {
 		t.Errorf("a top config with an invalid key and modules: error = %v, declarations %v", err, flags.declarations)
 	}
 
-	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directory: sub\n")
-	if _, err := applyReleaseConfig(map[string]string{"repo": sub}); err == nil || !strings.Contains(err.Error(), "shippedBy is required") {
+	writeConfig(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directories: []\n")
+	if _, err := applyReleaseConfig(map[string]string{"repo": sub}); err == nil || !strings.Contains(err.Error(), "directories cannot be empty") {
 		t.Errorf("a top config with an invalid declaration: error = %v", err)
 	}
 
 	outside := t.TempDir()
-	writeConfig(t, filepath.Join(outside, "bumpit.yaml"), "modules:\n  - directory: web\n    shippedBy: []\n")
+	writeConfig(t, filepath.Join(outside, "bumpit.yaml"), "modules:\n  - directories: [web]\n    shippedBy: []\n")
 	if _, err := applyReleaseConfig(map[string]string{"repo": outside}); err != nil {
 		t.Errorf("a directory that is no repository: applyConfig error = %v, want none, so that the command reports it", err)
 	}

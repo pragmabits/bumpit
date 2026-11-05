@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -13,12 +14,6 @@ import (
 func addModuleText(content []byte, declaration ModuleDeclaration) ([]byte, error) {
 	text, section, err := parseModules(content)
 	if err != nil {
-		return nil, err
-	}
-	if _, found, err := section.find(declaration.Directory); err != nil || found {
-		if err == nil {
-			err = fmt.Errorf("%s is declared already: change it with bumpit modules set", declaration.Directory)
-		}
 		return nil, err
 	}
 
@@ -44,16 +39,16 @@ func addModuleText(content []byte, declaration ModuleDeclaration) ([]byte, error
 	return text.bytes(), nil
 }
 
-// setModuleText writes the declaration in place of the one of its directory.
-// It refuses a declaration that holds a comment, which the new text would
-// lose.
-func setModuleText(content []byte, declaration ModuleDeclaration) ([]byte, error) {
-	text, _, item, err := parseDeclaredModule(content, declaration.Directory)
+// setModuleText writes the declaration in place of the item at index of the
+// modules list. It refuses an item that holds a comment, which the new text
+// would lose.
+func setModuleText(content []byte, index int, declaration ModuleDeclaration) ([]byte, error) {
+	text, _, item, err := parseModuleItem(content, index)
 	if err != nil {
 		return nil, err
 	}
 	if text.holdsComment(item.first, item.last, item.node) {
-		return nil, fmt.Errorf("the declaration of %s holds a comment, which bumpit modules set would lose: edit it by hand", declaration.Directory)
+		return nil, fmt.Errorf("the declaration of %s holds a comment, which bumpit modules set would lose: edit it by hand", declaration.identity())
 	}
 	lines, err := moduleLines(declaration, item.dashColumn, item.dashPrefix)
 	if err != nil {
@@ -63,11 +58,71 @@ func setModuleText(content []byte, declaration ModuleDeclaration) ([]byte, error
 	return text.bytes(), nil
 }
 
-// removeModuleText removes the declaration of directory, the comments inside
-// it included. Removing the last one leaves modules: [], which still
-// declares that the repository has no other module.
-func removeModuleText(content []byte, directory string) ([]byte, error) {
-	text, section, item, err := parseDeclaredModule(content, directory)
+// setCarriersText gives the item at index of the modules list the carriers, in
+// place of the value of its shippedBy key, and leaves the rest of the item as
+// it is, comments included. A value its line does not hold whole is refused.
+func setCarriersText(content []byte, index int, carriers []string) ([]byte, error) {
+	text, _, item, err := parseModuleItem(content, index)
+	if err != nil {
+		return nil, err
+	}
+	key, value, err := mappingKey(item.node, "shippedBy")
+	if err != nil {
+		return nil, err
+	}
+	if key == nil || !isOnOneLine(value) || value.Line != key.Line || text.valueEnd(value) < 0 {
+		return nil, fmt.Errorf("shippedBy is written over several lines, which bumpit cannot edit: edit it by hand")
+	}
+	encoded, err := encodeYAML(flowList(carriers))
+	if err != nil {
+		return nil, err
+	}
+
+	line := &text.lines[value.Line-1]
+	start := text.offset(value)
+	line.text = line.text[:start] + encoded[0] + line.text[text.valueEnd(value):]
+	return text.bytes(), nil
+}
+
+// isOnOneLine reports a scalar, or a flow list whose items lie on its line.
+func isOnOneLine(value *yaml.Node) bool {
+	switch {
+	case value.Kind == yaml.ScalarNode:
+		return true
+	case value.Kind != yaml.SequenceNode || value.Style&yaml.FlowStyle == 0:
+		return false
+	default:
+		return !slices.ContainsFunc(value.Content, func(item *yaml.Node) bool { return item.Line != value.Line })
+	}
+}
+
+// valueEnd is the index after value, which isOnOneLine accepted, on its line, and
+// -1 for a flow list that closes on a later line.
+func (c *configText) valueEnd(value *yaml.Node) int {
+	text := c.lines[value.Line-1].text
+	if value.Kind == yaml.ScalarNode {
+		return scalarEnd(text, c.offset(value))
+	}
+	from := c.offset(value)
+	if len(value.Content) > 0 {
+		last := value.Content[len(value.Content)-1]
+		from = c.offset(last) + len(last.Value)
+		if last.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) != 0 {
+			from = closingQuote(text, c.offset(last))
+		}
+	}
+	closing := strings.Index(text[from:], "]")
+	if closing < 0 {
+		return -1
+	}
+	return from + closing + 1
+}
+
+// removeModuleText removes the item at index of the modules list, the
+// comments inside it included. Removing the last one leaves modules: [], which
+// still declares that the repository has no other module.
+func removeModuleText(content []byte, index int) ([]byte, error) {
+	text, section, item, err := parseModuleItem(content, index)
 	if err != nil {
 		return nil, err
 	}
@@ -140,40 +195,22 @@ func isEmptyModules(value *yaml.Node) bool {
 	return value.Kind == yaml.SequenceNode || value.Kind == yaml.ScalarNode && value.Tag == "!!null"
 }
 
-func parseDeclaredModule(content []byte, directory string) (*configText, modulesSection, moduleItem, error) {
+// parseModuleItem locates the item at index of the modules list, the place
+// the same declaration has in the config the text loads as.
+func parseModuleItem(content []byte, index int) (*configText, modulesSection, moduleItem, error) {
 	text, section, err := parseModules(content)
 	if err != nil {
 		return nil, modulesSection{}, moduleItem{}, err
 	}
-	index, found, err := section.find(directory)
-	if err == nil && !found {
-		err = fmt.Errorf("%s is not declared: declare it with bumpit modules add", directory)
+	if section.key == nil || index >= len(section.value.Content) {
+		return nil, modulesSection{}, moduleItem{}, fmt.Errorf("modules: the file has no item %d", index+1)
 	}
-	if err != nil {
-		return nil, modulesSection{}, moduleItem{}, err
+	node := section.value.Content[index]
+	if node.Kind != yaml.MappingNode {
+		return nil, modulesSection{}, moduleItem{}, fmt.Errorf("modules: item %d is no mapping", index+1)
 	}
-	item, err := text.itemOf(section.value.Content[index])
+	item, err := text.itemOf(node)
 	return text, section, item, err
-}
-
-// find is the index of the item that declares directory.
-func (s modulesSection) find(directory string) (int, bool, error) {
-	if s.key == nil {
-		return 0, false, nil
-	}
-	for index, item := range s.value.Content {
-		if item.Kind != yaml.MappingNode {
-			return 0, false, fmt.Errorf("modules: item %d is no mapping", index+1)
-		}
-		_, value, err := mappingKey(item, "directory")
-		if err != nil {
-			return 0, false, fmt.Errorf("modules: item %d: %w", index+1, err)
-		}
-		if value != nil && value.Value == directory {
-			return index, true, nil
-		}
-	}
-	return 0, false, nil
 }
 
 // moduleItem is where an item of the modules list lies: its lines, from
@@ -259,7 +296,10 @@ func writtenEnd(text string, start int, value *yaml.Node) int {
 // gives them, the lists written in [...].
 func moduleLines(declaration ModuleDeclaration, dashColumn int, dashPrefix string) ([]string, error) {
 	mapping := &yaml.Node{Kind: yaml.MappingNode}
-	mapping.Content = append(mapping.Content, yamlString("directory"), yamlString(declaration.Directory))
+	if declaration.Name != "" {
+		mapping.Content = append(mapping.Content, yamlString("name"), yamlString(declaration.Name))
+	}
+	mapping.Content = append(mapping.Content, yamlString("directories"), flowList(declaration.Directories))
 	if declaration.TagPrefix != "" {
 		mapping.Content = append(mapping.Content, yamlString("tagPrefix"), yamlString(declaration.TagPrefix))
 	}

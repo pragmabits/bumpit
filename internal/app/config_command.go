@@ -80,8 +80,10 @@ func newConfigSetCmd() *cobra.Command {
 				return err
 			}
 			edit := configEdit{
-				path:   path,
-				create: true,
+				path:      path,
+				create:    true,
+				rehearsal: rehearsalOf(command),
+				subjects:  key.subjects,
 				change: func(want *Config, empty Config) (textEdit, error) {
 					key.set(want, arguments[1], empty.Repository)
 					return func(content []byte) ([]byte, error) { return setConfigKeyText(content, key.name, text) }, nil
@@ -114,7 +116,9 @@ func newConfigUnsetCmd() *cobra.Command {
 				return err
 			}
 			edit := configEdit{
-				path: path,
+				path:      path,
+				rehearsal: rehearsalOf(command),
+				subjects:  key.subjects,
 				change: func(want *Config, empty Config) (textEdit, error) {
 					key.reset(want, empty)
 					return func(content []byte) ([]byte, error) { return unsetConfigKeyText(content, key.name) }, nil
@@ -209,6 +213,12 @@ func findConfigKey(name string) (configKey, error) {
 		return configKey{}, fmt.Errorf("modules are changed with bumpit modules add, set and remove")
 	}
 	return configKey{}, fmt.Errorf("unknown key %s: bumpit.yaml takes %s", name, strings.Join(names, ", "))
+}
+
+// subjects are what an edit of the key is about: the key, called the same before
+// and after it.
+func (k configKey) subjects() []editSubject {
+	return []editSubject{{current: k.name, former: k.name}}
 }
 
 // valueText is value as the YAML text the key takes: true or false for a

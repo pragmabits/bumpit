@@ -560,6 +560,14 @@ func runCLI(binaryPath string, arguments ...string) (string, error) {
 	return string(output), err
 }
 
+// runCLIIn is runCLI from directory, for what depends on where a command runs.
+func runCLIIn(directory, binaryPath string, arguments ...string) (string, error) {
+	command := exec.Command(binaryPath, arguments...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
 func runGitOutput(repositoryPath string, arguments ...string) (string, error) {
 	command := exec.Command("git", arguments...)
 	command.Dir = repositoryPath
@@ -586,13 +594,13 @@ func TestCLIEndToEndDeclaredModules(t *testing.T) {
 
 	repositoryPath := initHomepageRepository(t)
 	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
-	commitFile(t, repositoryPath, "bumpit.yaml", "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n", "chore: configure bumpit")
+	commitFile(t, repositoryPath, "bumpit.yaml", "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n", "chore: configure bumpit")
 	binaryPath := buildCLI(t)
 
 	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath, "-g", "web/homepage"}, "homepage/v0.1.0")
 	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath}, "no release")
 	expectContains(t, binaryPath, []string{"modules", "-r", repositoryPath}, "web/homepage", "no go.mod", "homepage/v0.1.0")
-	expectContains(t, binaryPath, []string{"modules", "-r", repositoryPath, "-o", "json"}, `"declared": true`)
+	expectContains(t, binaryPath, []string{"modules", "-r", repositoryPath, "-o", "json"}, `"directories": [`, `"name": "web/homepage"`)
 	if output, _ := runCLI(binaryPath, "modules", "-r", repositoryPath, "-o", "json"); strings.Contains(output, `"path": ""`) {
 		t.Errorf("the JSON of a declared module carries an empty module path:\n%s", output)
 	}
@@ -618,7 +626,7 @@ func TestCLIEndToEndDeclaredModules(t *testing.T) {
 		t.Fatalf("tag --all-modules left the tags %q, %v", tags, err)
 	}
 
-	commitFile(t, repositoryPath, "bumpit.yaml", "modules:\n  - directory: web/homepage\n", "chore: forget shippedBy")
+	commitFile(t, repositoryPath, "bumpit.yaml", "modules:\n  - directories: [web/homepage]\n", "chore: forget shippedBy")
 	output, err := runCLI(binaryPath, "modules", "-r", repositoryPath)
 	if err == nil || !strings.Contains(output, "modules: web/homepage: shippedBy is required") {
 		t.Errorf("a declaration without shippedBy printed %q, %v", output, err)

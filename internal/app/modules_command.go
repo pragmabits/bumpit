@@ -40,13 +40,13 @@ func newModulesCmd() *cobra.Command {
 
 	command.Args = cobra.NoArgs
 	flags.bind(command)
-	command.AddCommand(newModulesAddCmd(), newModulesSetCmd(), newModulesRemoveCmd())
+	command.AddCommand(newModulesAddCmd(), newModulesSetCmd(), newModulesRemoveCmd(), newModulesCheckCmd())
 	return command
 }
 
-// writeModules writes one row per module: its directory, its module path, or
-// no go.mod for a module bumpit.yaml declares, its current tag and its next
-// tag, or why its plan failed.
+// writeModules writes one row per module: its directories, its module path, or
+// no go.mod for a module bumpit.yaml declares, with the name bumpit.yaml gives
+// it, its current tag and its next tag, or why its plan failed.
 func writeModules(writer io.Writer, releases []ModuleRelease) error {
 	if len(releases) == 0 {
 		_, err := fmt.Fprintln(writer, "no Go module found")
@@ -57,7 +57,7 @@ func writeModules(writer io.Writer, releases []ModuleRelease) error {
 	table := tabwriter.NewWriter(&text, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "DIRECTORY\tMODULE\tCURRENT\tNEXT")
 	for _, release := range releases {
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n", release.Directory, moduleColumn(release), valueOr(release.CurrentTag, "none"), nextColumn(release))
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n", directoryColumn(release), moduleColumn(release), valueOr(release.CurrentTag, "none"), nextColumn(release))
 	}
 	if err := table.Flush(); err != nil {
 		return err
@@ -67,11 +67,24 @@ func writeModules(writer io.Writer, releases []ModuleRelease) error {
 	return err
 }
 
-func moduleColumn(release ModuleRelease) string {
-	if release.Declared {
-		return "no go.mod"
+func directoryColumn(release ModuleRelease) string {
+	if release.Directory != "" {
+		return release.Directory
 	}
-	return release.Path
+	return strings.Join(release.Directories, ", ")
+}
+
+func moduleColumn(release ModuleRelease) string {
+	switch {
+	case release.Path == "" && release.Name == directoryColumn(release):
+		return "no go.mod"
+	case release.Path == "":
+		return release.Name + " (no go.mod)"
+	case release.Name != "":
+		return release.Name + " (" + release.Path + ")"
+	default:
+		return release.Path
+	}
 }
 
 func nextColumn(release ModuleRelease) string {

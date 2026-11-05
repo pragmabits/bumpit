@@ -239,7 +239,7 @@ func TestListModules(t *testing.T) {
 		t.Fatalf("unexpected modules: %#v", releases)
 	}
 	for index := range want {
-		if releases[index] != want[index] {
+		if !reflect.DeepEqual(releases[index], want[index]) {
 			t.Errorf("module %d = %#v, want %#v", index, releases[index], want[index])
 		}
 	}

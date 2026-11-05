@@ -68,7 +68,7 @@ func TestGuessDirectories(t *testing.T) {
 		"web/vendor/homepage/page.html",
 		"web/node_modules/homepage/package.json",
 	})
-	modules := []repositoryModule{{directory: "."}, {directory: "tools/homepage"}}
+	modules := []repositoryModule{{directories: []string{"."}}, {directories: []string{"tools/homepage"}}}
 
 	testCases := []struct {
 		prefix string
@@ -94,7 +94,7 @@ func TestWriteInitNamesAnEmptyPrefix(t *testing.T) {
 	t.Parallel()
 
 	var text strings.Builder
-	report := InitReport{Config: "bumpit.yaml", TagLines: []TagLine{{Prefix: "", Count: 2, Newest: "1.1.0", Candidates: []Candidate{}}}}
+	report := InitReport{Config: "bumpit.yaml", TagLines: []TagLine{{Prefix: "", Count: 2, Newest: "1.1.0"}}}
 	if err := writeInit(&text, report); err != nil {
 		t.Fatalf("writeInit returned error: %v", err)
 	}

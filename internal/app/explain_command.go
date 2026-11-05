@@ -86,17 +86,25 @@ func writeExplanation(writer io.Writer, plan ReleasePlan) error {
 // writeModuleLines writes which module the plan versions and what it reads
 // beyond its own directory or leaves out of it.
 func writeModuleLines(text *strings.Builder, plan ReleasePlan) {
+	var directories []string
 	switch {
-	case plan.Directory != "":
-		fmt.Fprintf(text, "Module: %s (declared in bumpit.yaml)\n", plan.Directory)
+	case len(plan.Directories) > 0:
+		fmt.Fprintf(text, "Module: %s (declared in bumpit.yaml)\n", plan.Name)
+		if plan.Name != strings.Join(plan.Directories, ", ") {
+			directories = plan.Directories
+		}
 	case plan.Module != "":
 		fmt.Fprintf(text, "Module: %s\n", plan.Module)
+		if plan.Name != "" {
+			fmt.Fprintf(text, "Name: %s\n", plan.Name)
+		}
 	}
 
 	lists := []struct {
 		label  string
 		values []string
 	}{
+		{label: "Directories", values: directories},
 		{label: "Paths", values: plan.Paths},
 		{label: "Paths from the Node packages", values: plan.DerivedPaths},
 		{label: "Shipped by", values: plan.ShippedBy},

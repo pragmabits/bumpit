@@ -9,6 +9,19 @@ import (
 	"github.com/pragmabits/bumpit/internal/gitx"
 )
 
+// TestRepositoryFindingsLeavesOutAModuleWithNoDirectory covers a declaration that
+// is nowhere in the repository: nothing can be said of it there.
+func TestRepositoryFindingsLeavesOutAModuleWithNoDirectory(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initGoRepository(t)
+	declarations := []ModuleDeclaration{{Name: "site", ShippedBy: &[]string{}}}
+	report, err := repositoryFindings(newRepositorySnapshot(gitx.New(repositoryPath)), declarations)
+	if err != nil || len(report.findings) != 0 || len(report.modules) != 2 {
+		t.Errorf("repositoryFindings = %+v, %v, want the two Go modules and no finding", report, err)
+	}
+}
+
 // TestDiscoveryRefusesModuleDeclarations covers what the repository must
 // confirm of a declaration.
 func TestDiscoveryRefusesModuleDeclarations(t *testing.T) {
@@ -23,16 +36,16 @@ func TestDiscoveryRefusesModuleDeclarations(t *testing.T) {
 		declarations []ModuleDeclaration
 		message      string
 	}{
-		{name: "a Go module", declarations: []ModuleDeclaration{declare("tool", "", nil)}, message: "modules: tool: the directory holds a go.mod: it is a Go module, versioned by its go.mod"},
+		{name: "a Go module", declarations: []ModuleDeclaration{declare("tool", "", nil)}, message: "modules: tool: the directory holds a go.mod, so it is a Go module: it takes only directories and name"},
 		{name: "an untracked directory", declarations: []ModuleDeclaration{declare("docs", "", nil)}, message: "modules: docs: docs matches no tracked file"},
 		{name: "an untracked path", declarations: []ModuleDeclaration{declare("web/homepage", "", []string{"deploy/homepage"})}, message: "modules: web/homepage: deploy/homepage matches no tracked file"},
-		{name: "a path inside its directory", declarations: []ModuleDeclaration{declare("web/homepage", "", []string{"web/homepage/admin"})}, message: "modules: web/homepage: paths lists web/homepage/admin, inside its own directory, which the module reads already"},
+		{name: "a path inside its directory", declarations: []ModuleDeclaration{declare("web/homepage", "", []string{"web/homepage/admin"})}, message: "modules: web/homepage: paths lists web/homepage/admin, inside its own directory: the module reads it already"},
 		{name: "a carrier that is no module", declarations: []ModuleDeclaration{declare("web/homepage", "", nil, "web")}, message: "modules: web/homepage: shippedBy lists web, which is no module of the repository"},
-		{name: "the prefix of a Go module", declarations: []ModuleDeclaration{declare("web/homepage", "tool/v", nil)}, message: "modules: web/homepage: its tag prefix tool/v is the one of tool too, so their tags could not be told apart"},
-		{name: "a prefix continued by a version", declarations: []ModuleDeclaration{declare("web/homepage", "v1", nil)}, message: "modules: web/homepage: its tag prefix v1 continues v, the one of ., with what can start a version"},
-		{name: "an invalid tag name", declarations: []ModuleDeclaration{declare("web/homepage", "home..page/v", nil)}, message: "modules: web/homepage: its tag prefix home..page/v does not make a valid tag name"},
+		{name: "the prefix of a Go module", declarations: []ModuleDeclaration{declare("web/homepage", "tool/v", nil)}, message: "modules: web/homepage: tag prefix tool/v is taken by another module: it is the one of tool too, so their tags could not be told apart"},
+		{name: "a prefix continued by a version", declarations: []ModuleDeclaration{declare("web/homepage", "v1", nil)}, message: "modules: web/homepage: tag prefix v1 continues v: v is the one of ., and what follows it can start a version, so a tag could be a version of both"},
+		{name: "an invalid tag name", declarations: []ModuleDeclaration{declare("web/homepage", "home..page/v", nil)}, message: "modules: web/homepage: tag prefix home..page/v does not make a valid tag name"},
 		{name: "a declared . beside a root go.mod", declarations: []ModuleDeclaration{declare(".", "", nil)}, message: "modules: .: the directory holds a go.mod"},
-		{name: "a tag prefix git takes for an option", declarations: []ModuleDeclaration{declare("web/homepage", "-site/v", nil)}, message: "modules: web/homepage: its tag prefix -site/v starts with -, which git takes for an option"},
+		{name: "a tag prefix git takes for an option", declarations: []ModuleDeclaration{declare("web/homepage", "-site/v", nil)}, message: "modules: web/homepage: tag prefix -site/v starts with -: git takes it for an option"},
 		{name: "a cycle of carriers", declarations: []ModuleDeclaration{declare("web/brand", "brand/v", nil, "web/homepage"), declare("web/homepage", "", nil, "web/brand")}, message: "modules: web/brand: shippedBy forms a cycle: through web/homepage, the module carries itself"},
 	}
 	for _, testCase := range cases {
@@ -69,13 +82,13 @@ func TestDiscoveryChecksGoCodeShipsDeclaredModule(t *testing.T) {
 			name:         "an embed from a package inside",
 			files:        map[string]string{"web/homepage/serve.go": "package homepage\n\nimport \"embed\"\n\n//go:embed dist\nvar site embed.FS\n"},
 			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
-			message:      "modules: web/homepage: web/homepage/serve.go:5:12 embeds dist into the module ., which then ships web/homepage; add . to its shippedBy",
+			message:      "modules: web/homepage: web/homepage/serve.go:5:12 embeds dist: the module . then ships it; add . to its shippedBy",
 		},
 		{
 			name:         "an embed from the root",
 			files:        map[string]string{"site.go": embedSource("web/homepage/dist")},
 			declarations: []ModuleDeclaration{declare("web/homepage", "", nil)},
-			message:      "modules: web/homepage: site.go:5:12 embeds web/homepage/dist into the module ., which then ships web/homepage; add . to its shippedBy",
+			message:      "modules: web/homepage: site.go:5:12 embeds web/homepage/dist: the module . then ships it; add . to its shippedBy",
 		},
 		{
 			name:         "an embed that misses",

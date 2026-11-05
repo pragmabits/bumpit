@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/pragmabits/bumpit/internal/gitx"
 	"github.com/pragmabits/bumpit/internal/semver"
 	"github.com/spf13/viper"
 )
@@ -34,18 +34,29 @@ type Config struct {
 	TagMessage string `mapstructure:"tagMessage"`
 	PreRelease string `mapstructure:"preRelease"`
 	Promote    *bool  `mapstructure:"promote"`
-	// Modules declares the modules of the repository that have no go.mod.
+	// Modules declares the modules of the repository that have no go.mod, and
+	// lists the Go modules it names.
 	Modules []ModuleDeclaration `mapstructure:"modules"`
 }
 
 // LoadConfig reads the config at path over defaults and validates it. It
 // returns the config and its absolute path.
 func LoadConfig(path string, defaults Config) (Config, string, error) {
-	config, absolutePath, err := decodeConfig(path, defaults)
+	configReader, absolutePath, err := readConfig(path, defaults)
 	if err != nil {
 		return Config{}, "", err
 	}
-	if err := validateConfig(config); err != nil {
+	config, err := unmarshalConfig(configReader, path, absolutePath)
+	if err != nil {
+		return Config{}, "", err
+	}
+	// A repository the file does not hold is the one the command line gives, read
+	// from where the command runs, whatever directory the file lies in.
+	validated := config
+	if !configReader.InConfig("repository") {
+		validated.Repository = defaults.Repository
+	}
+	if err := validateConfig(validated, configReader.InConfig); err != nil {
 		return Config{}, "", err
 	}
 	return config, absolutePath, nil
@@ -55,21 +66,31 @@ func LoadConfig(path string, defaults Config) (Config, string, error) {
 // resolved against the directory of path, without validating it. It returns
 // the config and its absolute path.
 func decodeConfig(path string, defaults Config) (Config, string, error) {
-	if strings.TrimSpace(path) == "" {
-		return Config{}, "", fmt.Errorf("config path cannot be empty")
-	}
-
-	configReader := newConfigReader(defaults)
-	configReader.SetConfigFile(path)
-	if err := configReader.ReadInConfig(); err != nil {
-		return Config{}, "", err
-	}
-	absolutePath, err := filepath.Abs(configReader.ConfigFileUsed())
+	configReader, absolutePath, err := readConfig(path, defaults)
 	if err != nil {
 		return Config{}, "", err
 	}
 	config, err := unmarshalConfig(configReader, path, absolutePath)
 	return config, absolutePath, err
+}
+
+// readConfig reads the file at path over defaults, and returns the reader and the
+// absolute path of the file.
+func readConfig(path string, defaults Config) (*viper.Viper, string, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, "", fmt.Errorf("config path cannot be empty")
+	}
+
+	configReader := newConfigReader(defaults)
+	configReader.SetConfigFile(path)
+	if err := configReader.ReadInConfig(); err != nil {
+		return nil, "", err
+	}
+	absolutePath, err := filepath.Abs(configReader.ConfigFileUsed())
+	if err != nil {
+		return nil, "", err
+	}
+	return configReader, absolutePath, nil
 }
 
 // decodeConfigContent reads content as the YAML config at path over
@@ -105,15 +126,16 @@ func DiscoverConfig(repository string, defaults Config) (Config, string, error) 
 }
 
 // findConfig is the path of bumpit.yaml, or else .bumpit.yaml, in directory,
-// and ErrConfigNotFound when neither exists.
+// and ErrConfigNotFound when neither exists, as neither does in a directory that
+// is a file. An error about one of them comes with its path.
 func findConfig(directory string) (string, error) {
 	for _, configPath := range configCandidatePaths(directory) {
 		_, err := os.Stat(configPath)
 		if err == nil {
 			return configPath, nil
 		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", err
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return configPath, err
 		}
 	}
 	return "", ErrConfigNotFound
@@ -148,84 +170,6 @@ func configCandidatePaths(repository string) []string {
 	}
 }
 
-// readDeclarations is the modules a run reads: those of the config given
-// with --config when it declares modules, an empty list included, and else
-// those of the config at the top of the repository, wherever --repo points.
-// The declarations describe the repository, as its go.mod files do, so a run
-// from a subdirectory reads them too, and a config found in a subdirectory
-// cannot declare others. config is the config the run loaded, at configPath,
-// nil when it loaded none. Outside a repository there is none, and the
-// command reports that repository is none.
-func readDeclarations(explicit bool, repository string, config *Config, configPath string) ([]ModuleDeclaration, error) {
-	if explicit && config != nil && config.Modules != nil {
-		return config.Modules, nil
-	}
-
-	top, topConfig, err := findTopConfig(repository)
-	if err != nil || top == "" {
-		return nil, err
-	}
-	if !explicit && config != nil && len(config.Modules) > 0 && !sameFile(configPath, topConfig) {
-		return nil, fmt.Errorf("%s declares modules, which bumpit reads from the bumpit.yaml at the top of the repository: move them to %s", configPath, filepath.Join(top, "bumpit.yaml"))
-	}
-	return topDeclarations(topConfig, config, configPath)
-}
-
-// findTopConfig is the top of the repository at repository and the config
-// there, empty when it has none. Outside a repository both are empty: the
-// command reports that repository is none.
-func findTopConfig(repository string) (string, string, error) {
-	top, err := gitx.New(repository).Top()
-	if err != nil {
-		return "", "", nil
-	}
-	topConfig, err := findConfig(top)
-	if errors.Is(err, ErrConfigNotFound) {
-		return top, "", nil
-	}
-	return top, topConfig, err
-}
-
-// topDeclarations reads the modules the config at topConfig declares, from
-// config when the run loaded that file already. Of a config the run did not
-// load, it reads and checks the modules key alone: the other keys are not
-// the run's, so a value one of them could not take does not stop it.
-func topDeclarations(topConfig string, config *Config, configPath string) ([]ModuleDeclaration, error) {
-	switch {
-	case topConfig == "":
-		return nil, nil
-	case config != nil && sameFile(configPath, topConfig):
-		return config.Modules, nil
-	}
-
-	configReader := viper.New()
-	configReader.SetConfigFile(topConfig)
-	var declarations []ModuleDeclaration
-	err := configReader.ReadInConfig()
-	if err == nil {
-		err = configReader.UnmarshalKey("modules", &declarations, func(decoder *mapstructure.DecoderConfig) { decoder.ErrorUnused = true })
-	}
-	if err == nil {
-		err = validateModuleDeclarations(declarations)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the modules of %s: %w", topConfig, err)
-	}
-	return declarations, nil
-}
-
-func sameFile(left, right string) bool {
-	if left == "" || right == "" {
-		return false
-	}
-	leftInfo, err := os.Stat(left)
-	if err != nil {
-		return false
-	}
-	rightInfo, err := os.Stat(right)
-	return err == nil && os.SameFile(leftInfo, rightInfo)
-}
-
 func resolveRepositoryPath(configPath, repository string) string {
 	if strings.TrimSpace(repository) == "" || filepath.IsAbs(repository) {
 		return repository
@@ -234,19 +178,70 @@ func resolveRepositoryPath(configPath, repository string) string {
 	return filepath.Join(filepath.Dir(configPath), repository)
 }
 
-func validateConfig(config Config) error {
-	if err := validateRepositoryPath(config.Repository); err != nil {
-		return err
+// validateConfig refuses what config holds, stopping at the first problem. A key
+// the file holds, as inFile tells, is a problem of the file, and the finding says
+// how to resolve it there. A value the command line gives is none, nor is a conflict
+// with one: the file does not say it, so the error says only what is wrong.
+func validateConfig(config Config, inFile func(key string) bool) error {
+	findings := configKeyFindings(config)
+	if len(findings) == 0 {
+		return validateModuleDeclarations(config.Modules)
 	}
+	first := findings[0]
+	if !inFile(first.Subject) || first.Other != "" && !inFile(first.Other) {
+		return errors.New(first.What)
+	}
+	return first
+}
 
-	if err := validateOutputFormat(config.Output); err != nil {
-		return err
+// repositoryKeyFinding is the finding of the repository key of config, nil when it
+// holds: what stops a command that reads the repository the key gives.
+func repositoryKeyFinding(config Config) error {
+	findings := configKeyFindings(config)
+	index := slices.IndexFunc(findings, func(finding Finding) bool { return finding.Subject == "repository" })
+	if index < 0 {
+		return nil
 	}
+	return findings[index]
+}
 
-	if err := validateReleaseSettings(config); err != nil {
-		return err
+// configFindings lists what can be told wrong from the config alone: its keys,
+// and the text of its modules.
+func configFindings(config Config) []Finding {
+	return append(configKeyFindings(config), declarationFindings(config.Modules)...)
+}
+
+// configKeyFindings lists the keys of the config that hold what a run refuses,
+// each whatever the others hold. Two keys that cannot go together name each
+// other, since which of them goes is a choice.
+func configKeyFindings(config Config) []Finding {
+	const anotherValue = "give it another value with bumpit config set, or take it out with bumpit config unset"
+	checks := []struct {
+		key   string
+		other string
+		how   string
+		err   error
+	}{
+		{key: "repository", how: anotherValue, err: validateRepositoryPath(config.Repository)},
+		{key: "output", how: anotherValue, err: validateOutputFormat(config.Output)},
+		{key: "preRelease", how: anotherValue, err: validatePreRelease(config)},
+		{key: "promote", other: "preRelease", how: "take out one of them with bumpit config unset", err: validatePromote(config)},
+		{key: "startVersion", how: anotherValue, err: validateStartVersion(config)},
 	}
-	return validateModuleDeclarations(config.Modules)
+	var findings []Finding
+	for _, check := range checks {
+		if check.err != nil {
+			findings = append(findings, Finding{
+				Rule:    ruleInvalidKey,
+				Subject: check.key,
+				Other:   check.other,
+				What:    check.err.Error(),
+				Why:     "a run that loads the file stops at it",
+				How:     check.how,
+			})
+		}
+	}
+	return findings
 }
 
 func validateRepositoryPath(repository string) error {
@@ -264,22 +259,29 @@ func validateRepositoryPath(repository string) error {
 	return nil
 }
 
-func validateReleaseSettings(config Config) error {
-	if strings.TrimSpace(config.PreRelease) != "" {
-		if _, err := (semver.Version{}).WithPreRelease(config.PreRelease); err != nil {
-			return fmt.Errorf("invalid preRelease: %w", err)
-		}
+func validatePreRelease(config Config) error {
+	if strings.TrimSpace(config.PreRelease) == "" {
+		return nil
 	}
+	if _, err := (semver.Version{}).WithPreRelease(config.PreRelease); err != nil {
+		return fmt.Errorf("invalid preRelease: %w", err)
+	}
+	return nil
+}
 
+func validatePromote(config Config) error {
 	if config.Promote != nil && *config.Promote && strings.TrimSpace(config.PreRelease) != "" {
 		return fmt.Errorf("preRelease and promote cannot be used together")
 	}
+	return nil
+}
 
-	if strings.TrimSpace(config.StartVersion) != "" {
-		if _, err := versionAfterPrefix(config.StartVersion, tagPrefix(config.TagMatch)); err != nil {
-			return fmt.Errorf("invalid startVersion: %w", err)
-		}
+func validateStartVersion(config Config) error {
+	if strings.TrimSpace(config.StartVersion) == "" {
+		return nil
 	}
-
+	if _, err := versionAfterPrefix(config.StartVersion, tagPrefix(config.TagMatch)); err != nil {
+		return fmt.Errorf("invalid startVersion: %w", err)
+	}
 	return nil
 }

@@ -66,12 +66,15 @@ type ReleasePlan struct {
 	Analyses        []CommitDecision `json:"commits"`
 	IgnoredTags     []IgnoredTag     `json:"ignored_tags,omitempty"`
 	Module          string           `json:"module,omitempty"`
-	Dependents      []Dependent      `json:"dependents,omitempty"`
-	// Directory, Paths and ShippedBy describe a module bumpit.yaml declares,
+	// Name is what the commands call the module, left out for a Go module
+	// bumpit.yaml gives no name.
+	Name       string      `json:"name,omitempty"`
+	Dependents []Dependent `json:"dependents,omitempty"`
+	// Directories, Paths and ShippedBy describe a module bumpit.yaml declares,
 	// which has no module path.
-	Directory string   `json:"directory,omitempty"`
-	Paths     []string `json:"paths,omitempty"`
-	ShippedBy []string `json:"shipped_by,omitempty"`
+	Directories []string `json:"directories,omitempty"`
+	Paths       []string `json:"paths,omitempty"`
+	ShippedBy   []string `json:"shipped_by,omitempty"`
 	// Ships lists the declared modules whose commits the module reads, since
 	// its release carries them.
 	Ships []string `json:"ships,omitempty"`
@@ -142,6 +145,9 @@ func BuildReleasePlan(opts Options) (ReleasePlan, error) {
 // whose prefixes otherPrefixes lists.
 func planRelease(client gitx.Client, scope *moduleScope, otherPrefixes []string, opts Options) (ReleasePlan, error) {
 	if err := scope.derivationError(); err != nil {
+		return ReleasePlan{}, err
+	}
+	if err := scope.tagNameError(client); err != nil {
 		return ReleasePlan{}, err
 	}
 	tagMatch := tagPattern(scope, opts.TagMatch)

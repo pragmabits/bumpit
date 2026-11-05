@@ -32,7 +32,7 @@ func TestPathspecsOfGoModules(t *testing.T) {
 		repositoryModules = append(repositoryModules, goRepositoryModule(module))
 	}
 	for _, testCase := range cases {
-		index := slices.IndexFunc(repositoryModules, func(module repositoryModule) bool { return module.directory == testCase.directory })
+		index := slices.IndexFunc(repositoryModules, func(module repositoryModule) bool { return module.name == testCase.directory })
 		scope := &moduleScope{module: repositoryModules[index], modules: repositoryModules}
 		queries := scope.queries()
 		if len(queries) != 1 || !slices.Equal(queries[0].pathspecs, testCase.want) {

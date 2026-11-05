@@ -65,8 +65,8 @@ func resolveTagMessage(commandLineMessage string, config *Config, nextTag string
 
 // moduleOutcome is what tagging every module did to one of them.
 type moduleOutcome struct {
-	directory string
-	text      string
+	module string
+	text   string
 }
 
 // tagAllModules tags every module that has a release and is not held. It
@@ -107,7 +107,7 @@ func planFailures(releases []ModuleRelease) error {
 	var failures []error
 	for _, release := range releases {
 		if release.Error != "" {
-			failures = append(failures, fmt.Errorf("%s: %s", release.Directory, release.Error))
+			failures = append(failures, fmt.Errorf("%s: %s", release.label(), release.Error))
 		}
 	}
 	if len(failures) == 0 {
@@ -123,7 +123,7 @@ func createModuleTags(client gitx.Client, releases []ModuleRelease, commandLineM
 	outcomes := make([]moduleOutcome, 0, len(releases))
 	created := 0
 	for _, release := range releases {
-		outcome := moduleOutcome{directory: release.Directory}
+		outcome := moduleOutcome{module: release.label()}
 		switch {
 		case !release.HasRelease:
 			outcome.text = "no release"
@@ -161,13 +161,13 @@ func holdAdvice(release ModuleRelease) string {
 	return "update " + path.Join(release.Directory, "go.mod") + ", commit and rerun"
 }
 
-// writeOutcomes writes one row per module: its directory and what tagging it
-// did.
+// writeOutcomes writes one row per module: what the commands call it and what
+// tagging it did.
 func writeOutcomes(writer io.Writer, outcomes []moduleOutcome) error {
 	var text strings.Builder
 	table := tabwriter.NewWriter(&text, 0, 0, 2, ' ', 0)
 	for _, outcome := range outcomes {
-		fmt.Fprintf(table, "%s\t%s\n", outcome.directory, outcome.text)
+		fmt.Fprintf(table, "%s\t%s\n", outcome.module, outcome.text)
 	}
 	if err := table.Flush(); err != nil {
 		return err

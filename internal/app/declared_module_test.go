@@ -18,8 +18,8 @@ func TestBuildReleasePlanForDeclaredModule(t *testing.T) {
 	homepage := []ModuleDeclaration{declare("web/homepage", "homepage/v", []string{"web/brand"})}
 
 	plan := planOf(t, Options{Repository: repositoryPath, Module: "web/homepage", Modules: homepage})
-	if plan.NextTag != "homepage/v0.1.0" || plan.Directory != "web/homepage" || plan.Module != "" {
-		t.Fatalf("unexpected first release of the homepage: next %s, directory %q, module %q", plan.NextTag, plan.Directory, plan.Module)
+	if plan.NextTag != "homepage/v0.1.0" || plan.Name != "web/homepage" || !slices.Equal(plan.Directories, []string{"web/homepage"}) || plan.Module != "" {
+		t.Fatalf("unexpected first release of the homepage: next %s, name %q, directories %v, module %q", plan.NextTag, plan.Name, plan.Directories, plan.Module)
 	}
 	unprefixed := []ModuleDeclaration{declare("web/homepage", "", nil)}
 	if plan := planOf(t, Options{Repository: repositoryPath, Module: "web/homepage", Modules: unprefixed}); plan.NextTag != "web/homepage/v0.1.0" {
@@ -201,7 +201,7 @@ func commitNewFile(t *testing.T, repositoryPath, name, content, subject string) 
 // modules in carriers.
 func declare(directory, tagPrefix string, paths []string, carriers ...string) ModuleDeclaration {
 	shippedBy := append([]string{}, carriers...)
-	return ModuleDeclaration{Directory: directory, TagPrefix: tagPrefix, Paths: paths, ShippedBy: &shippedBy}
+	return ModuleDeclaration{Directories: []string{directory}, TagPrefix: tagPrefix, Paths: paths, ShippedBy: &shippedBy}
 }
 
 func planOf(t *testing.T, opts Options) ReleasePlan {
@@ -244,17 +244,17 @@ func TestListModulesListsDeclaredModules(t *testing.T) {
 		t.Fatalf("ListModules returned error: %v", err)
 	}
 
-	directories := make([]string, 0, len(releases))
+	labels := make([]string, 0, len(releases))
 	for _, release := range releases {
-		directories = append(directories, release.Directory)
+		labels = append(labels, release.label())
 	}
-	if !slices.Equal(directories, []string{".", "docs", "tool"}) {
-		t.Fatalf("modules listed as %q", directories)
+	if !slices.Equal(labels, []string{".", "docs", "tool"}) {
+		t.Fatalf("modules listed as %q", labels)
 	}
-	if docs := releases[1]; !docs.Declared || docs.Path != "" || docs.NextTag != "docs/v0.1.0" || docs.Hold != nil {
+	if docs := releases[1]; !slices.Equal(docs.Directories, []string{"docs"}) || docs.Directory != "" || docs.Path != "" || docs.NextTag != "docs/v0.1.0" || docs.Hold != nil {
 		t.Fatalf("unexpected release of the declared module: %+v", docs)
 	}
-	if root := releases[0]; root.NextTag != "v0.2.0" || root.Declared {
+	if root := releases[0]; root.NextTag != "v0.2.0" || root.Directory != "." || root.Directories != nil || root.Name != "" {
 		t.Fatalf("unexpected release of the root module: %+v", root)
 	}
 	if tool := releases[2]; tool.Hold == nil || tool.Hold.Requirements[0].Directory != "." {

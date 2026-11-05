@@ -17,37 +17,37 @@ func TestAddModuleText(t *testing.T) {
 		{
 			name:    "to an empty file",
 			content: "",
-			want:    "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
+			want:    "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
 		},
 		{
 			name:    "after the last key, to a file without a final newline",
 			content: "# bumpit\n\nrepository: . # here\ntagMatch: v*",
-			want:    "# bumpit\n\nrepository: . # here\ntagMatch: v*\nmodules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
+			want:    "# bumpit\n\nrepository: . # here\ntagMatch: v*\nmodules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
 		},
 		{
 			name:    "below an empty flow list, keeping its comment",
 			content: "modules: [] # none yet\noutput: text\n",
-			want:    "modules: # none yet\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\noutput: text\n",
+			want:    "modules: # none yet\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\noutput: text\n",
 		},
 		{
 			name:    "below a key with no value",
 			content: "modules:\noutput: text\n",
-			want:    "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\noutput: text\n",
+			want:    "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\noutput: text\n",
 		},
 		{
 			name:    "after the last item, in its indentation and line endings",
-			content: "modules:\r\n-   directory: web/admin # the admin\r\n    shippedBy: [\".\"]\r\n\r\n# after\r\noutput: text\r\n",
-			want:    "modules:\r\n-   directory: web/admin # the admin\r\n    shippedBy: [\".\"]\r\n-   directory: web/homepage\r\n    tagPrefix: homepage/v\r\n    paths: [web/brand]\r\n    shippedBy: []\r\n\r\n# after\r\noutput: text\r\n",
+			content: "modules:\r\n-   directories: [web/admin] # the admin\r\n    shippedBy: [\".\"]\r\n\r\n# after\r\noutput: text\r\n",
+			want:    "modules:\r\n-   directories: [web/admin] # the admin\r\n    shippedBy: [\".\"]\r\n-   directories: [web/homepage]\r\n    tagPrefix: homepage/v\r\n    paths: [web/brand]\r\n    shippedBy: []\r\n\r\n# after\r\noutput: text\r\n",
 		},
 		{
 			name:    "below an empty flow list after a byte order mark",
 			content: "\ufeffmodules: [] # none yet\n",
-			want:    "\ufeffmodules: # none yet\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
+			want:    "\ufeffmodules: # none yet\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
 		},
 		{
 			name:    "under a document start",
-			content: "---\nModules:\n  - directory: web/admin\n    shippedBy: []\n",
-			want:    "---\nModules:\n  - directory: web/admin\n    shippedBy: []\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
+			content: "---\nModules:\n  - directories: [web/admin]\n    shippedBy: []\n",
+			want:    "---\nModules:\n  - directories: [web/admin]\n    shippedBy: []\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n",
 		},
 	}
 
@@ -74,30 +74,21 @@ func TestAddModuleTextWritesValuesAsYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("addModuleText returned error: %v", err)
 	}
-	want := "modules:\n  - directory: web/home, page\n    paths: ['#brand', yes]\n    shippedBy: [\"true\"]\n"
+	want := "modules:\n  - directories: ['web/home, page']\n    paths: ['#brand', yes]\n    shippedBy: [\"true\"]\n"
 	if string(got) != want {
 		t.Errorf("addModuleText wrote\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestAddModuleTextRefusesADeclaredDirectory(t *testing.T) {
-	t.Parallel()
-
-	_, err := addModuleText([]byte("modules:\n  - directory: web/homepage\n    shippedBy: []\n"), declare("web/homepage", "", nil))
-	if err == nil || !strings.Contains(err.Error(), "web/homepage is declared already") {
-		t.Fatalf("addModuleText returned %v, want web/homepage is declared already", err)
 	}
 }
 
 func TestSetModuleText(t *testing.T) {
 	t.Parallel()
 
-	content := "modules:\n- directory: web/admin\n  shippedBy: []\n\n- {directory: web/homepage, paths: [web/brand], shippedBy: []}\noutput: text # plain\n"
-	got, err := setModuleText([]byte(content), declare("web/homepage", "site/v", nil, "web/admin"))
+	content := "modules:\n- directories: [web/admin]\n  shippedBy: []\n\n- {directories: [web/homepage], paths: [web/brand], shippedBy: []}\noutput: text # plain\n"
+	got, err := setModuleText([]byte(content), 1, declare("web/homepage", "site/v", nil, "web/admin"))
 	if err != nil {
 		t.Fatalf("setModuleText returned error: %v", err)
 	}
-	want := "modules:\n- directory: web/admin\n  shippedBy: []\n\n- directory: web/homepage\n  tagPrefix: site/v\n  shippedBy: [web/admin]\noutput: text # plain\n"
+	want := "modules:\n- directories: [web/admin]\n  shippedBy: []\n\n- directories: [web/homepage]\n  tagPrefix: site/v\n  shippedBy: [web/admin]\noutput: text # plain\n"
 	if string(got) != want {
 		t.Errorf("setModuleText wrote\n%q\nwant\n%q", got, want)
 	}
@@ -107,23 +98,92 @@ func TestSetModuleTextRefusesACommentInTheDeclaration(t *testing.T) {
 	t.Parallel()
 
 	for _, content := range []string{
-		"modules:\n  - directory: web/homepage\n    # the brand\n    paths: [web/brand]\n    shippedBy: []\n",
-		"modules:\n  - directory: web/homepage\n    tagPrefix: a, 'b # the prefix\n    shippedBy: []\n",
-		"modules:\n  - {directory: web/homepage, shippedBy: []} # the homepage\n",
+		"modules:\n  - directories: [web/homepage]\n    # the brand\n    paths: [web/brand]\n    shippedBy: []\n",
+		"modules:\n  - directories: [web/homepage]\n    tagPrefix: a, 'b # the prefix\n    shippedBy: []\n",
+		"modules:\n  - {directories: [web/homepage], shippedBy: []} # the homepage\n",
 	} {
-		_, err := setModuleText([]byte(content), declare("web/homepage", "", nil))
+		_, err := setModuleText([]byte(content), 0, declare("web/homepage", "", nil))
 		if err == nil || !strings.Contains(err.Error(), "comment") {
 			t.Errorf("setModuleText of\n%s\nreturned %v, want a refusal that names the comment", content, err)
 		}
 	}
 }
 
-func TestSetModuleTextRefusesAnUndeclaredDirectory(t *testing.T) {
+// TestSetModuleTextFindsTheItemByItsPlace covers an item no directory can
+// find: one whose list is empty, or that repeats the directory of another.
+func TestSetModuleTextFindsTheItemByItsPlace(t *testing.T) {
 	t.Parallel()
 
-	_, err := setModuleText([]byte("modules: []\n"), declare("web/homepage", "", nil))
-	if err == nil || !strings.Contains(err.Error(), "web/homepage is not declared") {
-		t.Fatalf("setModuleText returned %v, want web/homepage is not declared", err)
+	content := "modules:\n  - directories: [web]\n    shippedBy: []\n  - directories: [web]\n    shippedBy: []\n  - directories: []\n"
+	got, err := setModuleText([]byte(content), 1, declare("docs", "", nil))
+	if err != nil {
+		t.Fatalf("setModuleText returned error: %v", err)
+	}
+	want := "modules:\n  - directories: [web]\n    shippedBy: []\n  - directories: [docs]\n    shippedBy: []\n  - directories: []\n"
+	if string(got) != want {
+		t.Errorf("setModuleText wrote\n%q\nwant\n%q", got, want)
+	}
+
+	if _, err := setModuleText([]byte("modules: []\n"), 0, declare("web", "", nil)); err == nil {
+		t.Errorf("setModuleText of an item that does not exist returned no error")
+	}
+	if _, err := setModuleText([]byte("modules:\n  - web\n"), 0, declare("web", "", nil)); err == nil || !strings.Contains(err.Error(), "item 1 is no mapping") {
+		t.Errorf("setModuleText of an item that is no mapping returned %v", err)
+	}
+}
+
+// TestSetCarriersText covers the key an edit changes in an entry it was not
+// asked to change: the rest of the entry stays, comments included.
+func TestSetCarriersText(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		content string
+		index   int
+		want    string
+	}{
+		{
+			name:    "a flow list, with the comment after it",
+			content: "modules:\n  - directories: [web] # the site\n    shippedBy: [stack, 'a b'] # carried\n",
+			want:    "modules:\n  - directories: [web] # the site\n    shippedBy: [root] # carried\n",
+		},
+		{
+			name:    "the second item of a flow mapping",
+			content: "modules:\n  - directories: [web]\n  - {directories: [docs], shippedBy: [stack], paths: [a]}\n",
+			index:   1,
+			want:    "modules:\n  - directories: [web]\n  - {directories: [docs], shippedBy: [root], paths: [a]}\n",
+		},
+		{
+			name:    "a single value",
+			content: "modules:\n  - directories: [web]\n    shippedBy: stack # carried\n",
+			want:    "modules:\n  - directories: [web]\n    shippedBy: [root] # carried\n",
+		},
+		{
+			name:    "a quoted value, in a file with other line endings",
+			content: "modules:\r\n  - directories: [web]\r\n    shippedBy: 'stack'\r\n",
+			want:    "modules:\r\n  - directories: [web]\r\n    shippedBy: [root]\r\n",
+		},
+	}
+	for _, testCase := range testCases {
+		got, err := setCarriersText([]byte(testCase.content), testCase.index, []string{"root"})
+		if err != nil {
+			t.Errorf("%s: setCarriersText returned error: %v", testCase.name, err)
+			continue
+		}
+		if string(got) != testCase.want {
+			t.Errorf("%s: setCarriersText wrote\n%q\nwant\n%q", testCase.name, got, testCase.want)
+		}
+	}
+
+	for _, content := range []string{
+		"modules:\n  - directories: [web]\n    shippedBy:\n      - stack\n",
+		"modules:\n  - directories: [web]\n    shippedBy: [stack,\n      other]\n",
+	} {
+		_, err := setCarriersText([]byte(content), 0, []string{"root"})
+		if err == nil || !strings.Contains(err.Error(), "shippedBy is written over several lines") {
+			t.Errorf("setCarriersText of\n%s\nreturned %v", content, err)
+		}
 	}
 }
 
@@ -131,22 +191,22 @@ func TestRemoveModuleText(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name      string
-		content   string
-		directory string
-		want      string
+		name    string
+		content string
+		index   int
+		want    string
 	}{
 		{
-			name:      "one of several, with the comments inside it",
-			directory: "web/admin",
-			content:   "modules:\n  - directory: web/admin\n    # shipped alone\n    shippedBy: []\n  # the homepage\n  - directory: web/homepage\n    shippedBy: []\n",
-			want:      "modules:\n  # the homepage\n  - directory: web/homepage\n    shippedBy: []\n",
+			name:    "one of several, with the comments inside it",
+			index:   0,
+			content: "modules:\n  - directories: [web/admin]\n    # shipped alone\n    shippedBy: []\n  # the homepage\n  - directories: [web/homepage]\n    shippedBy: []\n",
+			want:    "modules:\n  # the homepage\n  - directories: [web/homepage]\n    shippedBy: []\n",
 		},
 		{
-			name:      "the last one, back to an empty list with the comment of the key",
-			directory: "web/homepage",
-			content:   "modules: # declared by hand\n  - directory: web/homepage\n    shippedBy: []\noutput: text\n",
-			want:      "modules: [] # declared by hand\noutput: text\n",
+			name:    "the last one, back to an empty list with the comment of the key",
+			index:   0,
+			content: "modules: # declared by hand\n  - directories: [web/homepage]\n    shippedBy: []\noutput: text\n",
+			want:    "modules: [] # declared by hand\noutput: text\n",
 		},
 	}
 
@@ -154,7 +214,7 @@ func TestRemoveModuleText(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := removeModuleText([]byte(testCase.content), testCase.directory)
+			got, err := removeModuleText([]byte(testCase.content), testCase.index)
 			if err != nil {
 				t.Fatalf("removeModuleText returned error: %v", err)
 			}
@@ -177,10 +237,10 @@ func TestModuleTextRefusals(t *testing.T) {
 		{name: "several documents", content: "output: text\n---\noutput: json\n", want: "several YAML documents"},
 		{name: "a root that is no mapping", content: "- output\n", want: "is no mapping"},
 		{name: "a flow root", content: "{output: text}\n", want: "flow mapping"},
-		{name: "a flow list with items", content: "modules: [{directory: web/admin, shippedBy: []}]\n", want: "modules is written as a list in [...]"},
-		{name: "a block scalar", content: "modules:\n  - directory: >\n      web/admin\n    shippedBy: []\n", want: "block scalar"},
-		{name: "an anchor", content: "modules: &declared\n  - directory: web/admin\n    shippedBy: []\n", want: "anchor"},
-		{name: "an alias", content: "carriers: &carriers []\nmodules:\n  - directory: web/admin\n    shippedBy: *carriers\n", want: "alias"},
+		{name: "a flow list with items", content: "modules: [{directories: [web/admin], shippedBy: []}]\n", want: "modules is written as a list in [...]"},
+		{name: "a block scalar", content: "modules:\n  - directories: >\n      web/admin\n    shippedBy: []\n", want: "block scalar"},
+		{name: "an anchor", content: "modules: &declared\n  - directories: [web/admin]\n    shippedBy: []\n", want: "anchor"},
+		{name: "an alias", content: "carriers: &carriers []\nmodules:\n  - directories: [web/admin]\n    shippedBy: *carriers\n", want: "alias"},
 		{name: "an empty list on a line of its own", content: "modules:\n            []\n", want: "on a line of its own"},
 		{name: "a null on a line of its own", content: "modules:\n  ~\n", want: "on a line of its own"},
 		{name: "a key written twice", content: "modules: []\nMODULES: []\n", want: "modules is written twice"},

@@ -49,12 +49,12 @@ func holdReleases(releases []ModuleRelease, modules []repositoryModule, newest m
 	goModules := goModulesOf(modules)
 	holds := map[string]*Hold{}
 	for index, module := range modules {
-		if module.declared() || !releases[index].HasRelease {
+		if module.withoutGoMod() || !releases[index].HasRelease {
 			continue
 		}
 		if outdated := outdatedRequirements(*module.goModule, goModules, newest); len(outdated) > 0 {
 			releases[index].Hold = &Hold{Requirements: outdated}
-			holds[module.directory] = releases[index].Hold
+			holds[module.goModule.Directory] = releases[index].Hold
 		}
 	}
 
@@ -109,16 +109,12 @@ func waitsOnItself(start string, holds map[string]*Hold) bool {
 	return false
 }
 
-// discoverModules loads every tracked go.mod of the repository, leaving out
-// the directories the go command ignores.
-func discoverModules(client gitx.Client) ([]gomod.Module, string, error) {
-	top, err := client.Top()
-	if err != nil {
-		return nil, "", err
-	}
+// discoverModules loads every tracked go.mod of the repository at top, leaving
+// out the directories the go command ignores.
+func discoverModules(client gitx.Client, top string) ([]gomod.Module, error) {
 	files, err := client.TrackedFiles(":(top,glob)**/go.mod")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	var modules []gomod.Module
@@ -129,12 +125,12 @@ func discoverModules(client gitx.Client) ([]gomod.Module, string, error) {
 		}
 		module, err := gomod.Load(top, directory)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		modules = append(modules, module)
 	}
 	slices.SortFunc(modules, compareModules)
-	return modules, top, nil
+	return modules, nil
 }
 
 // compareModules orders the root module first and the others by directory.
@@ -160,17 +156,55 @@ func compareDirectories(left, right string) int {
 func goModulesOf(modules []repositoryModule) []gomod.Module {
 	var goModules []gomod.Module
 	for _, module := range modules {
-		if !module.declared() {
+		if !module.withoutGoMod() {
 			goModules = append(goModules, *module.goModule)
 		}
 	}
 	return goModules
 }
 
+// goTagNameFindings lists the Go modules in a directory git takes in no tag name,
+// which a plan of the module stops at. A proof has no use for them: the directory
+// and the go.mod give the prefix, and no edit of the file changes either.
+func goTagNameFindings(snapshot *repositorySnapshot, modules []repositoryModule) ([]Finding, error) {
+	var findings []Finding
+	for _, module := range modules {
+		if module.withoutGoMod() {
+			continue
+		}
+		valid, err := snapshot.validTagName(module.tagPrefix + "0.0.0")
+		if err != nil {
+			return nil, err
+		}
+		if !valid {
+			findings = append(findings, invalidTagNameFinding(module))
+		}
+	}
+	return findings, nil
+}
+
+// tagNameError refuses a Go module in a directory git takes in no tag name. The
+// pattern of its tags would match the tags of other modules, and the prefix read
+// from that pattern would be cut at its first glob character. A declared module
+// with such a prefix stops every run before it gets here.
+func (m *moduleScope) tagNameError(client gitx.Client) error {
+	if m == nil || m.module.withoutGoMod() {
+		return nil
+	}
+	valid, err := client.ValidTagName(m.module.tagPrefix + "0.0.0")
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return invalidTagNameFinding(m.module)
+	}
+	return nil
+}
+
 // checkVersion refuses a version the module path of a Go module cannot
 // carry. A declared module has no module path and takes any version.
 func (m *moduleScope) checkVersion(next semver.Version) error {
-	if m == nil || m.module.declared() {
+	if m == nil || m.module.withoutGoMod() {
 		return nil
 	}
 	return m.module.goModule.CheckVersion("v" + next.String())
@@ -179,7 +213,7 @@ func (m *moduleScope) checkVersion(next semver.Version) error {
 // dependentsBelow lists the Go modules of the repository that require the
 // Go module at a version below next.
 func (m *moduleScope) dependentsBelow(next semver.Version) []Dependent {
-	if m == nil || m.module.declared() {
+	if m == nil || m.module.withoutGoMod() {
 		return nil
 	}
 

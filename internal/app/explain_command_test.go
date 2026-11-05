@@ -63,7 +63,8 @@ func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
 	declared := ReleasePlan{
 		NextTag:      "homepage/v0.1.1",
 		HighestBump:  "patch",
-		Directory:    "web/homepage",
+		Name:         "web/homepage",
+		Directories:  []string{"web/homepage"},
 		Paths:        []string{"deploy/homepage"},
 		DerivedPaths: []string{"web/brand", "web/package.json"},
 		ShippedBy:    []string{"."},
@@ -78,10 +79,25 @@ func TestWriteExplanationDescribesDeclaredModules(t *testing.T) {
 		LeavesOut:   []string{"docs"},
 	}
 
+	namedPlan := ReleasePlan{
+		NextTag:     "homepage/v0.1.1",
+		HighestBump: "patch",
+		Name:        "homepage",
+		Directories: []string{"web/homepage", "deploy/homepage"},
+	}
+	namedGoPlan := ReleasePlan{
+		NextTag:     "tool/v0.2.0",
+		HighestBump: "minor",
+		Module:      "example.com/repository/tool",
+		Name:        "stack",
+	}
+
 	cases := []struct {
 		plan  ReleasePlan
 		lines []string
 	}{
+		{plan: namedPlan, lines: []string{"Module: homepage (declared in bumpit.yaml)\nDirectories: web/homepage, deploy/homepage\nCurrent tag:"}},
+		{plan: namedGoPlan, lines: []string{"Module: example.com/repository/tool\nName: stack\nCurrent tag:"}},
 		{plan: declared, lines: []string{
 			"Module: web/homepage (declared in bumpit.yaml)\nPaths: deploy/homepage\nPaths from the Node packages: web/brand, web/package.json\nShipped by: .\nCurrent tag:",
 			"- abc1234 fix: sharpen the logo [patch: fix commit] via web/brand\n",

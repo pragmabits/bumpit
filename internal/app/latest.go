@@ -39,6 +39,9 @@ func FindLatestTag(opts LatestOptions) (LatestResult, error) {
 	if err != nil {
 		return LatestResult{}, err
 	}
+	if err := scope.tagNameError(client); err != nil {
+		return LatestResult{}, err
+	}
 
 	otherPrefixes := otherModulePrefixes(scope, modules, opts.TagMatch)
 	tag, version, err := latestSemverTag(client, tagPattern(scope, opts.TagMatch), opts.All, otherPrefixes)

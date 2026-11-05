@@ -14,8 +14,14 @@ type TagLine struct {
 	Count  int    `json:"count"`
 	// Newest is the tag of the highest version.
 	Newest string `json:"newest"`
-	// Candidates are the directories the tags may be the releases of.
-	Candidates []Candidate `json:"candidates"`
+	// Candidate is the module the tags may be the releases of, nil when no
+	// directory can be it.
+	Candidate *Candidate `json:"candidate,omitempty"`
+	// Command is the bumpit modules set that gives the tags to the module that
+	// left them behind, when a declared module owns the directory they name.
+	Command string `json:"command,omitempty"`
+	// Refused is why that command would be refused, in place of it.
+	Refused string `json:"refused,omitempty"`
 }
 
 // unownedTagLines groups by prefix the tags that are a prefix followed by a
@@ -83,13 +89,17 @@ func guessDirectories(prefix string, tracked trackedTree, modules []repositoryMo
 
 	var guesses []string
 	for directory := range tracked.directories {
-		matches := directory == name || strings.HasSuffix(directory, "/"+name)
-		if matches && !isModuleDirectory(directory, modules) && !isFixtureDirectory(directory) {
+		if directoryIsNamed(directory, name) && !isModuleDirectory(directory, modules) && !isFixtureDirectory(directory) {
 			guesses = append(guesses, directory)
 		}
 	}
 	slices.Sort(guesses)
 	return guesses
+}
+
+// directoryIsNamed reports whether the last elements of directory are name.
+func directoryIsNamed(directory, name string) bool {
+	return directory == name || strings.HasSuffix(directory, "/"+name)
 }
 
 // prefixName is the name a tag prefix gives: the prefix without the
@@ -106,7 +116,7 @@ func prefixName(prefix string) string {
 }
 
 func isModuleDirectory(directory string, modules []repositoryModule) bool {
-	return slices.ContainsFunc(modules, func(module repositoryModule) bool { return module.directory == directory })
+	return slices.ContainsFunc(modules, func(module repositoryModule) bool { return module.owns(directory) })
 }
 
 // isFixtureDirectory reports a directory that lies in a vendor, testdata or
@@ -118,11 +128,15 @@ func isFixtureDirectory(directory string) bool {
 	})
 }
 
-// Candidate is a directory bumpit init proposes to declare as a module, and
-// the command that declares it.
+// Candidate is a module bumpit init proposes to declare, and the command that
+// declares it.
 type Candidate struct {
-	// Directory is relative to the repository init was given.
-	Directory string `json:"directory"`
+	// Name is the name it proposes, empty when the directory names the module.
+	Name string `json:"name,omitempty"`
+	// Directories are relative to the repository init was given.
+	Directories []string `json:"directories"`
+	// LeftOut are the directories it could not propose, and why.
+	LeftOut []LeftOutDirectory `json:"left_out,omitempty"`
 	// TagPrefix is the prefix its tags take, empty for the default one.
 	TagPrefix string `json:"tag_prefix,omitempty"`
 	// ShippedBy lists the Go modules whose //go:embed patterns reach it,
@@ -135,8 +149,14 @@ type Candidate struct {
 	Command string `json:"command,omitempty"`
 	// Refused is why bumpit modules add would refuse it.
 	Refused string `json:"refused,omitempty"`
-	// topDirectory is Directory relative to the top of the repository.
-	topDirectory string
+}
+
+// LeftOutDirectory is a directory bumpit could not propose or list, and why: one
+// that a tag line suggests and that no module can own beside the others, or that
+// of a Go module no entry can name.
+type LeftOutDirectory struct {
+	Directory string `json:"directory"`
+	Reason    string `json:"reason"`
 }
 
 // EmbedPlace is a //go:embed pattern and where it is written.

@@ -16,34 +16,83 @@ func TestCLIEndToEndEditsModules(t *testing.T) {
 	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
 	binaryPath := buildCLI(t)
 
-	expectContains(t, binaryPath, []string{"modules", "add", "web/homepage", "-r", repositoryPath, "-T", "homepage/v", "-f", "web/brand", "-B"}, "added web/homepage to "+configPath, "commit the file")
-	expectFile(t, configPath, "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n")
+	expectContains(t, binaryPath, []string{"modules", "add", "web/homepage", "-r", repositoryPath, "-T", "homepage/v", "-f", "web/brand"}, "added web/homepage to "+configPath, "commit the file")
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    paths: [web/brand]\n    shippedBy: []\n")
 	expectOutput(t, binaryPath, []string{"next", "-r", repositoryPath, "-g", "web/homepage", "-d"}, "homepage/v0.1.0")
 
-	expectFailure(t, binaryPath, []string{"modules", "add", "web/homepage", "-r", repositoryPath, "-B"}, "web/homepage is declared already")
-	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath}, "--shipped-by or --shipped-by-none")
-	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath, "-B", "-b", "."}, "--shipped-by-none")
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/homepage", "-r", repositoryPath}, "web/homepage is declared already")
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath, "-B"}, "unknown shorthand flag")
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath, "--shipped-by-none"}, "unknown flag")
+	expectFailure(t, binaryPath, []string{"modules", "set", "web/homepage", "-r", repositoryPath, "-B", "-b", "."}, "--shipped-by-none")
 	expectFailure(t, binaryPath, []string{"modules", "set", "web/homepage", "-r", repositoryPath, "-f", "web/brand", "-N"}, "--no-paths")
 	expectFailure(t, binaryPath, []string{"modules", "set", "web/homepage", "-r", repositoryPath}, "nothing to change")
 	expectFailure(t, binaryPath, []string{"modules", "set", "web/homepage", "-r", repositoryPath, "--no-paths=false", "--shipped-by-none=false"}, "nothing to change")
-	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath, "--shipped-by-none=false"}, "--shipped-by or --shipped-by-none")
 
 	web := filepath.Join(repositoryPath, "web")
 	expectContains(t, binaryPath, []string{"modules", "set", "homepage", "-r", web, "-b", "..", "-N"}, "changed web/homepage in "+configPath)
-	expectFile(t, configPath, "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    shippedBy: [.]\n")
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    shippedBy: [.]\n")
 
-	expectFailure(t, binaryPath, []string{"modules", "add", "web/missing", "-r", repositoryPath, "-B"}, "web/missing matches no tracked file")
-	expectFile(t, configPath, "modules:\n  - directory: web/homepage\n    tagPrefix: homepage/v\n    shippedBy: [.]\n")
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/missing", "-r", repositoryPath}, "web/missing matches no tracked file")
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    shippedBy: [.]\n")
+
+	expectContains(t, binaryPath, []string{"modules", "set", "web/homepage", "-r", repositoryPath, "-B"}, "changed web/homepage in "+configPath)
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    tagPrefix: homepage/v\n    shippedBy: []\n")
 
 	otherPath := filepath.Join(repositoryPath, "other.yaml")
 	writeFile(t, otherPath, "output: text\n")
-	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath, "-c", otherPath, "-B"}, otherPath+" declares no modules")
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-r", repositoryPath, "-c", otherPath}, otherPath+" declares no modules")
 
 	expectContains(t, binaryPath, []string{"modules", "remove", "web/homepage", "-r", repositoryPath}, "removed web/homepage from "+configPath)
 	expectFile(t, configPath, "modules: []\n")
 	expectFailure(t, binaryPath, []string{"modules", "remove", "web/homepage", "-r", repositoryPath}, "web/homepage is not declared")
 
 	expectFailure(t, binaryPath, []string{"modules", "web"}, `unknown command "web"`)
+}
+
+// TestCLIEndToEndAddWithoutCarrier declares a module with no -b: the
+// declaration says no module carries it, and the command says what that rests
+// on. With a -b the command does not say it.
+func TestCLIEndToEndAddWithoutCarrier(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initHomepageRepository(t)
+	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
+	binaryPath := buildCLI(t)
+
+	expectContains(t, binaryPath, []string{"modules", "add", "web/homepage", "-r", repositoryPath},
+		"added web/homepage to "+configPath,
+		"the modules around it no longer read it (.)",
+		"bumpit sees only //go:embed",
+		"bumpit modules set -b",
+		"commit the file",
+	)
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    shippedBy: []\n")
+
+	output, err := runCLI(binaryPath, "modules", "add", "web/brand", "-r", repositoryPath, "-b", ".")
+	if err != nil {
+		t.Fatalf("add with a carrier returned error: %v\n%s", err, output)
+	}
+	if strings.Contains(output, "//go:embed") {
+		t.Errorf("add with a carrier says what no carrier rests on:\n%s", output)
+	}
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    shippedBy: []\n  - directories: [web/brand]\n    shippedBy: [.]\n")
+}
+
+// TestCLIEndToEndAddRefusesEmbeddedModuleWithoutCarrier covers the case bumpit
+// can see: a //go:embed reaches the directory, so a declaration with no -b is
+// refused and no file is written.
+func TestCLIEndToEndAddRefusesEmbeddedModuleWithoutCarrier(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initHomepageRepository(t)
+	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
+	commitFile(t, repositoryPath, "site.go", "package repository\n\nimport _ \"embed\"\n\n//go:embed web/homepage/index.html\nvar page string\n", "feat: serve the homepage")
+	binaryPath := buildCLI(t)
+
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/homepage", "-r", repositoryPath}, "add . to its shippedBy")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Errorf("the refused add left %s: %v", configPath, err)
+	}
 }
 
 // TestCLIEndToEndEditsConfig reads, sets and unsets the keys of the config
@@ -165,14 +214,14 @@ func TestCLIEndToEndEditsModulesAsDeclared(t *testing.T) {
 
 	repositoryPath := initHomepageRepository(t)
 	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
-	writeFile(t, configPath, "modules:\n  - directory: web/homepage\n    paths: []\n    shippedBy: []\n")
+	writeFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    paths: []\n    shippedBy: []\n")
 	web := filepath.Join(repositoryPath, "web")
 	writeFile(t, filepath.Join(web, "bumpit.yaml"), "output: xml\n")
 	binaryPath := buildCLI(t)
 
 	expectContains(t, binaryPath, []string{"modules", "set", "web/homepage", "-r", repositoryPath, "-T", "site/v"}, "changed web/homepage")
-	expectFile(t, configPath, "modules:\n  - directory: web/homepage\n    tagPrefix: site/v\n    shippedBy: []\n")
-	expectContains(t, binaryPath, []string{"modules", "add", "brand", "-r", web, "-B"}, "added web/brand to "+configPath)
+	expectFile(t, configPath, "modules:\n  - directories: [web/homepage]\n    tagPrefix: site/v\n    shippedBy: []\n")
+	expectContains(t, binaryPath, []string{"modules", "add", "brand", "-r", web}, "added web/brand to "+configPath)
 }
 
 // TestCLIEndToEndEditResolvesThroughTheLink edits a config reached through
