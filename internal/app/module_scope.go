@@ -99,6 +99,17 @@ func relativeToTop(top, repository, directory string) (string, error) {
 	return filepath.ToSlash(relative), nil
 }
 
+// commandLineDirectory is the directory, relative to top, that a command line run
+// from base means by name in this working tree, every link followed, as --module
+// reads it, or the name itself when no such path can be made.
+func commandLineDirectory(top, base, name string) string {
+	directory, err := relativeToTop(top, base, name)
+	if err != nil {
+		return name
+	}
+	return directory
+}
+
 // resolveLinks resolves the links of path as far as it exists on disk: what git
 // tracks may be gone from it, while the directory above it is reached by a link.
 func resolveLinks(path string) string {

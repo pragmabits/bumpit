@@ -34,6 +34,10 @@ func TestCLIEndToEndAFlagIsNoProblemOfTheFile(t *testing.T) {
 		{arguments: []string{"latest", "-o", "xml"}, wanted: `unsupported output format "xml"`},
 		{arguments: []string{"modules", "-o", "xml"}, wanted: `unsupported output format "xml"`},
 		{arguments: []string{"tag", "-p", "!!bad"}, wanted: `invalid prerelease "!!bad"`},
+		{arguments: []string{"next", "--match=-x/v*"}, wanted: `tag pattern "-x/v*" starts with -`},
+		{arguments: []string{"latest", "--match=--no-merged=HEAD"}, wanted: `tag pattern "--no-merged=HEAD" starts with -`},
+		{arguments: []string{"explain", "--match=-x/v*"}, wanted: `tag pattern "-x/v*" starts with -`},
+		{arguments: []string{"tag", "--match=--no-merged=HEAD"}, wanted: `tag pattern "--no-merged=HEAD" starts with -`},
 	}
 	for _, testCase := range cases {
 		output, err := runCLIIn(repositoryPath, binaryPath, testCase.arguments...)
@@ -58,6 +62,8 @@ func TestCLIEndToEndAKeyOfTheFileIsAProblemOfTheFile(t *testing.T) {
 		{content: "output: xml\n", arguments: []string{"next"}, wanted: "give it another value with bumpit config set"},
 		{content: "output: xml\n", arguments: []string{"next", "-o", "json"}, wanted: "give it another value with bumpit config set"},
 		{content: "preRelease: rc\npromote: true\n", arguments: []string{"next"}, wanted: "take out one of them with bumpit config unset"},
+		{content: "tagMatch: \"--no-merged=HEAD\"\n", arguments: []string{"next"}, wanted: "give it another value with bumpit config set"},
+		{content: "tagMatch: \"--no-merged=HEAD\"\n", arguments: []string{"latest"}, wanted: "give it another value with bumpit config set"},
 	}
 	for _, testCase := range inTheFile {
 		repositoryPath := initGoRepository(t)
@@ -82,6 +88,69 @@ func TestCLIEndToEndAKeyOfTheFileIsAProblemOfTheFile(t *testing.T) {
 		if err == nil || !strings.Contains(output, "cannot be used together") || speaksOfTheFile(output) {
 			t.Errorf("%q, bumpit %v returned %v\n%s", testCase.content, testCase.arguments, err, output)
 		}
+	}
+}
+
+// TestCLIEndToEndATagPatternGitReadsAsAnOption covers a tagMatch that starts with
+// -, which git would read as an option, and which can match no tag git creates:
+// the check lists it with the command that takes it out, and no edit writes it.
+func TestCLIEndToEndATagPatternGitReadsAsAnOption(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initGoRepository(t)
+	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
+	binaryPath := buildCLI(t)
+
+	writeFile(t, configPath, "tagMatch: \"--no-merged=HEAD\"\n")
+	report, passed := readCheck(t, binaryPath, repositoryPath)
+	item := itemOf(t, report.Blocking, ruleInvalidKey)
+	if passed || item.Subject != "tagMatch" || item.Command != "bumpit config unset tagMatch" {
+		t.Errorf("passed %v, report %+v", passed, report)
+	}
+
+	writeFile(t, configPath, "output: text\n")
+	expectFailure(t, binaryPath, []string{"config", "set", "-r", repositoryPath, "tagMatch", "--", "-x/v*"}, `tag pattern "-x/v*" starts with -`)
+	expectFile(t, configPath, "output: text\n")
+}
+
+// TestCLIEndToEndAFlagIsCheckedWhateverTheFileHolds covers a value the command line
+// gives with no file to load, and beside a file that sets the key, which the flag
+// replaces: the run stops at it as it does beside a file without the key.
+func TestCLIEndToEndAFlagIsCheckedWhateverTheFileHolds(t *testing.T) {
+	t.Parallel()
+
+	binaryPath := buildCLI(t)
+	files := map[string]string{
+		"no file":               "",
+		"a file that sets them": "repository: .\ntagMatch: \"\"\nstartVersion: \"\"\nallowDirty: true\noutput: text\npreRelease: \"\"\npromote: false\n",
+	}
+	cases := []struct {
+		arguments []string
+		wanted    string
+	}{
+		{arguments: []string{"next", "-s", "nonsense"}, wanted: `invalid semantic version "nonsense"`},
+		{arguments: []string{"explain", "-s", "nonsense"}, wanted: `invalid semantic version "nonsense"`},
+		{arguments: []string{"tag", "-s", "nonsense"}, wanted: `invalid semantic version "nonsense"`},
+		{arguments: []string{"next", "-p", "!!bad"}, wanted: `invalid prerelease "!!bad"`},
+		{arguments: []string{"tag", "-p", "!!bad"}, wanted: `invalid prerelease "!!bad"`},
+		{arguments: []string{"next", "--match=--no-merged=HEAD"}, wanted: `tag pattern "--no-merged=HEAD" starts with -`},
+		{arguments: []string{"explain", "--match=-x/v*"}, wanted: `tag pattern "-x/v*" starts with -`},
+		{arguments: []string{"tag", "--match=-x/v*"}, wanted: `tag pattern "-x/v*" starts with -`},
+		{arguments: []string{"latest", "--match=--no-merged=HEAD"}, wanted: `tag pattern "--no-merged=HEAD" starts with -`},
+		{arguments: []string{"modules", "-r", "/does/not/exist"}, wanted: `repository path "/does/not/exist"`},
+	}
+	for situation, content := range files {
+		repositoryPath := initGoRepository(t)
+		if content != "" {
+			writeFile(t, filepath.Join(repositoryPath, "bumpit.yaml"), content)
+		}
+		for _, testCase := range cases {
+			output, err := runCLIIn(repositoryPath, binaryPath, testCase.arguments...)
+			if err == nil || !strings.Contains(output, testCase.wanted) || speaksOfTheFile(output) {
+				t.Errorf("%s: bumpit %v returned %v\n%s", situation, testCase.arguments, err, output)
+			}
+		}
+		expectNoNewTag(t, repositoryPath)
 	}
 }
 

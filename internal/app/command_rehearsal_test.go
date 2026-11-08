@@ -20,28 +20,28 @@ func TestRehearsalReadsWhatTheCommandsBeforeItWrote(t *testing.T) {
 	series := newRehearsal()
 
 	add := []string{"modules", "add", "web/homepage", "-r", repositoryPath}
-	if err := series.run(add); err != nil {
-		t.Fatalf("the first add returned %v", err)
+	if refused := rehearse(t, series, add); refused != "" {
+		t.Fatalf("the first add was refused: %s", refused)
 	}
-	if err := series.run(add); err == nil || !strings.Contains(err.Error(), "web/homepage is declared already") {
-		t.Errorf("the second add returned %v, want it to see the first", err)
+	if refused := rehearse(t, series, add); !strings.Contains(refused, "web/homepage is declared already") {
+		t.Errorf("the second add was refused with %q, want it to see the first", refused)
 	}
-	if err := series.run([]string{"modules", "set", "web/homepage", "-T", "site/v", "-r", repositoryPath}); err != nil {
-		t.Errorf("a set of what the add declared returned %v", err)
+	if refused := rehearse(t, series, []string{"modules", "set", "web/homepage", "-T", "site/v", "-r", repositoryPath}); refused != "" {
+		t.Errorf("a set of what the add declared was refused: %s", refused)
 	}
 
-	if err := series.run([]string{"modules", "add", "web/missing", "-r", repositoryPath}); err == nil || !strings.Contains(err.Error(), "web/missing matches no tracked file") {
-		t.Fatalf("an add the proof refuses returned %v", err)
+	if refused := rehearse(t, series, []string{"modules", "add", "web/missing", "-r", repositoryPath}); !strings.Contains(refused, "web/missing matches no tracked file") {
+		t.Fatalf("an add the proof refuses was refused with %q", refused)
 	}
-	if err := series.run([]string{"modules", "remove", "web/missing", "-r", repositoryPath}); err == nil || !strings.Contains(err.Error(), "web/missing is not declared") {
-		t.Errorf("a remove of what was refused returned %v, want it not to be there", err)
+	if refused := rehearse(t, series, []string{"modules", "remove", "web/missing", "-r", repositoryPath}); !strings.Contains(refused, "web/missing is not declared") {
+		t.Errorf("a remove of what was refused was refused with %q, want it not to be there", refused)
 	}
 
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Errorf("the rehearsal created %s: %v", configPath, err)
 	}
-	if err := newRehearsal().run(add); err != nil {
-		t.Errorf("an add in another rehearsal returned %v, want it to see only the disk", err)
+	if refused := rehearse(t, newRehearsal(), add); refused != "" {
+		t.Errorf("an add in another rehearsal was refused: %s, want it to see only the disk", refused)
 	}
 }
 
@@ -57,13 +57,25 @@ func TestRehearsalOfTheKeys(t *testing.T) {
 	series := newRehearsal()
 
 	unset := []string{"config", "unset", "output", "-r", repositoryPath}
-	if err := series.run(unset); err != nil {
-		t.Fatalf("the first unset returned %v", err)
+	if refused := rehearse(t, series, unset); refused != "" {
+		t.Fatalf("the first unset was refused: %s", refused)
 	}
-	if err := series.run(unset); err == nil || !strings.Contains(err.Error(), "output is not set") {
-		t.Errorf("the second unset returned %v, want it to see the first", err)
+	if refused := rehearse(t, series, unset); !strings.Contains(refused, "output is not set") {
+		t.Errorf("the second unset was refused with %q, want it to see the first", refused)
 	}
 	expectFile(t, configPath, content)
+}
+
+// rehearse runs words in series and returns why they would be refused. Git fails
+// to answer in no fixture here, so that fails the test.
+func rehearse(t *testing.T, series *rehearsal, words []string) string {
+	t.Helper()
+
+	refused, err := series.run(words)
+	if err != nil {
+		t.Fatalf("the rehearsal of %v failed: %v", words, err)
+	}
+	return refused
 }
 
 func TestRefusalReason(t *testing.T) {

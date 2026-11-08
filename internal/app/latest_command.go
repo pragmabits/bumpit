@@ -20,10 +20,6 @@ func newLatestCmd() *cobra.Command {
 				return err
 			}
 
-			if err := validateOutputFormat(flags.output); err != nil {
-				return err
-			}
-
 			latest, err := FindLatestTag(flags.options())
 			if err != nil {
 				return err

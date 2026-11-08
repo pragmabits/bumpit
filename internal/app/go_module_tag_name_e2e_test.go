@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,8 +11,8 @@ const noTagCarriesIt = "does not make a valid tag name"
 
 // TestCLIEndToEndAGoModuleNoTagCanCarry covers a Go module in a directory git takes
 // in no tag name: a plan of the module stops, rather than write a tag cut at the
-// first glob character or read the tags that pattern matches, and the other modules
-// go on.
+// first glob character, read the tags that pattern matches or give git a pattern
+// that starts with -, which it reads as an option, and the other modules go on.
 func TestCLIEndToEndAGoModuleNoTagCanCarry(t *testing.T) {
 	t.Parallel()
 
@@ -23,13 +24,13 @@ func TestCLIEndToEndAGoModuleNoTagCanCarry(t *testing.T) {
 		return repositoryPath
 	}
 
-	for _, directory := range []string{"gen[v2]", "gen v2", "gen.lock"} {
+	for _, directory := range []string{"gen[v2]", "gen v2", "gen.lock", "-gen"} {
 		t.Run(directory, func(t *testing.T) {
 			t.Parallel()
 			repositoryPath := withModule(t, directory)
 
 			for _, command := range []string{"next", "explain", "latest", "tag"} {
-				output, err := runCLIIn(repositoryPath, binaryPath, command, "-g", directory)
+				output, err := runCLIIn(repositoryPath, binaryPath, command, "--module="+directory)
 				if err == nil || !strings.Contains(output, noTagCarriesIt) {
 					t.Errorf("%s returned %v\n%s", command, err, output)
 				}
@@ -86,6 +87,45 @@ func TestCLIEndToEndAGoModuleNoTagCanCarry(t *testing.T) {
 		}
 		if strings.Contains(item.How, "another prefix") {
 			t.Errorf("item = %+v, asks for a key a Go module does not take", item)
+		}
+		if slices.ContainsFunc(report.Review, func(item CheckItem) bool { return item.Subject == "gen v2" }) {
+			t.Errorf("review = %+v, proposes to list a module whose directory is to be renamed", report.Review)
+		}
+	})
+
+	for _, directory := range []string{"gen v2", "-gen"} {
+		t.Run("init beside "+directory, func(t *testing.T) {
+			t.Parallel()
+			repositoryPath := withModule(t, directory)
+
+			output, err := runCLIIn(repositoryPath, binaryPath, "init", "-o", "json")
+			var report InitReport
+			if decodeErr := json.Unmarshal([]byte(output), &report); err != nil || decodeErr != nil {
+				t.Fatalf("init returned %v, %v\n%s", err, decodeErr, output)
+			}
+			if !slices.Equal(report.Declared, []string{".", "tool"}) || len(report.Untaggable) != 1 || report.Untaggable[0].Directory != directory || !strings.Contains(report.Untaggable[0].Reason, noTagCarriesIt) {
+				t.Errorf("report = %+v, want the module left out of the file, and why", report)
+			}
+
+			output, err = runCLIIn(repositoryPath, binaryPath, "init")
+			if err != nil || !strings.Contains(output, "no tag can carry "+directory) || !strings.Contains(output, "rename the directory") {
+				t.Errorf("init returned %v\n%s", err, output)
+			}
+			checked, _ := readCheck(t, binaryPath, repositoryPath)
+			if item := itemOf(t, checked.Blocking, ruleInvalidTagName); len(checked.Blocking) != 1 || item.Subject != directory {
+				t.Errorf("blocking = %+v, want only the directory to rename", checked.Blocking)
+			}
+		})
+	}
+
+	t.Run("a name of it that another module no entry lists has", func(t *testing.T) {
+		t.Parallel()
+		repositoryPath := withModule(t, "gen v2")
+		writeFile(t, repositoryPath+"/bumpit.yaml", "modules:\n  - directories: [.]\n  - name: tool\n    directories: [gen v2]\n")
+
+		report, _ := readCheck(t, binaryPath, repositoryPath)
+		if !slices.ContainsFunc(report.Review, func(item CheckItem) bool { return item.Rule == ruleGoModuleUnlisted && item.Subject == "tool" }) {
+			t.Errorf("review = %+v, leaves out the Go module in tool, which no entry lists", report.Review)
 		}
 	})
 

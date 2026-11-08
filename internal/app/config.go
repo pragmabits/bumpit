@@ -194,6 +194,20 @@ func validateConfig(config Config, inFile func(key string) bool) error {
 	return first
 }
 
+// checkFlagValues refuses what a run takes from the command line: loading a file
+// checks the values the file holds, and a flag replaces one only after, while with
+// no file nothing is loaded. values are those the run takes, the file's among them,
+// which were checked already, so that what it finds came from a flag.
+func checkFlagValues(values Config) error {
+	return validateConfig(values, inNoFile)
+}
+
+// inNoFile is the inFile of values no file holds, which validateConfig then
+// refuses with what is wrong alone.
+func inNoFile(string) bool {
+	return false
+}
+
 // repositoryKeyFinding is the finding of the repository key of config, nil when it
 // holds: what stops a command that reads the repository the key gives.
 func repositoryKeyFinding(config Config) error {
@@ -223,6 +237,7 @@ func configKeyFindings(config Config) []Finding {
 		err   error
 	}{
 		{key: "repository", how: anotherValue, err: validateRepositoryPath(config.Repository)},
+		{key: "tagMatch", how: anotherValue, err: validateTagMatch(config.TagMatch)},
 		{key: "output", how: anotherValue, err: validateOutputFormat(config.Output)},
 		{key: "preRelease", how: anotherValue, err: validatePreRelease(config)},
 		{key: "promote", other: "preRelease", how: "take out one of them with bumpit config unset", err: validatePromote(config)},
@@ -272,6 +287,15 @@ func validatePreRelease(config Config) error {
 func validatePromote(config Config) error {
 	if config.Promote != nil && *config.Promote && strings.TrimSpace(config.PreRelease) != "" {
 		return fmt.Errorf("preRelease and promote cannot be used together")
+	}
+	return nil
+}
+
+// validateTagMatch refuses a tag pattern that starts with -: git would read it as
+// an option, and the tags it could match are none git creates.
+func validateTagMatch(tagMatch string) error {
+	if strings.HasPrefix(tagMatch, "-") {
+		return fmt.Errorf("tag pattern %q starts with -, which git reads as an option", tagMatch)
 	}
 	return nil
 }

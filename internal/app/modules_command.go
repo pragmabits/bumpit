@@ -22,9 +22,6 @@ func newModulesCmd() *cobra.Command {
 			if err := flags.applyConfig(command); err != nil {
 				return err
 			}
-			if err := validateOutputFormat(flags.output); err != nil {
-				return err
-			}
 
 			releases, err := ListModules(flags.options())
 			if err != nil {

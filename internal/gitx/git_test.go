@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,8 @@ func TestValidTagName(t *testing.T) {
 		"web//v0.0.0":         false,
 		"web/.v0.0.0":         false,
 		"home page/v0.0.0":    false,
+		"-x/v0.0.0":           false,
+		"web/-x/v0.0.0":       true,
 	} {
 		if got, err := client.ValidTagName(name); got != want || err != nil {
 			t.Errorf("ValidTagName(%q) = %v, %v; want %v", name, got, err, want)
@@ -28,6 +31,8 @@ func TestValidTagName(t *testing.T) {
 
 	if _, err := New(filepath.Join(t.TempDir(), "gone")).ValidTagName("v0.0.0"); err == nil {
 		t.Errorf("ValidTagName in a directory that does not exist reported no error")
+	} else if _, failed := errors.AsType[*Error](err); !failed {
+		t.Errorf("ValidTagName in a directory that does not exist returned %T, no git failure", err)
 	}
 }
 
@@ -74,6 +79,31 @@ func TestCommitOrderMatchesCommitsSince(t *testing.T) {
 		if !slices.Equal(order, hashes) {
 			t.Errorf("CommitOrder(%q) = %q, CommitsSince gives %q", tag, order, hashes)
 		}
+	}
+}
+
+// TestTagExists covers a tag that exists, one that does not, and git failing to
+// answer, which is no answer that the tag does not exist.
+func TestTagExists(t *testing.T) {
+	t.Parallel()
+
+	repository := t.TempDir()
+	run(t, repository, "init", "-q")
+	run(t, repository, "config", "user.name", "bumpit")
+	run(t, repository, "config", "user.email", "bumpit@example.com")
+	commit(t, repository, "first.txt", "feat: first")
+	run(t, repository, "tag", "-a", "v0.1.0", "-m", "Release v0.1.0")
+
+	client := New(repository)
+	for name, want := range map[string]bool{"v0.1.0": true, "v0.2.0": false} {
+		if got, err := client.TagExists(name); got != want || err != nil {
+			t.Errorf("TagExists(%q) = %v, %v; want %v", name, got, err, want)
+		}
+	}
+	if _, err := New(filepath.Join(t.TempDir(), "gone")).TagExists("v0.1.0"); err == nil {
+		t.Errorf("TagExists in a directory that does not exist reported no error")
+	} else if _, failed := errors.AsType[*Error](err); !failed {
+		t.Errorf("TagExists in a directory that does not exist returned %T, no git failure", err)
 	}
 }
 

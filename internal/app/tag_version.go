@@ -11,6 +11,13 @@ import (
 // first one.
 const globMetacharacters = `*?[\`
 
+// firstTagName is the name of the first tag prefix makes, of version 0.0.0: git
+// takes every other one the prefix makes when it takes that one, since what
+// follows the prefix is a version.
+func firstTagName(prefix string) string {
+	return prefix + "0.0.0"
+}
+
 // tagPrefix is the text a tag pattern fixes before its first wildcard, which
 // every tag the pattern matches starts with: "v" for "v*", "release-" for
 // "release-*", "cmd/tool/v" for "cmd/tool/v*".

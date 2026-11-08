@@ -15,7 +15,7 @@ func newInitCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "init",
 		Short: "Create bumpit.yaml and propose the modules to declare",
-		Long:  "bumpit init creates bumpit.yaml at the top of the repository, where the runs read the modules from, when it has neither bumpit.yaml nor .bumpit.yaml, and lists in it the Go modules no entry lists, which bumpit can tell for certain. It stops on a file that holds a problem. What it cannot tell it proposes, and does not declare, each with the bumpit modules add that declares it: the directories a line of version tags that no module owns may be the releases of, as one module per line, and the directories whose Helm chart or public Node.js package gives a version of its own. A module is proposed as shipped by the Go modules whose //go:embed patterns reach it, and by none when no pattern does, which is all bumpit sees. It runs each command without writing before it prints it, over what the Go modules and the commands before it would write, and says why when it would be refused, so they are safe to follow in that order. It writes the file last, so that it writes nothing when it cannot make up the proposals. The paths of the proposals are relative to --repo, and the Go modules it lists are named as the file writes them, relative to the top of the repository.",
+		Long:  "bumpit init creates bumpit.yaml at the top of the repository, where the runs read the modules from, when it has neither bumpit.yaml nor .bumpit.yaml, and lists in it the Go modules no entry lists, which bumpit can tell for certain, but those in a directory no entry can name or git takes in no tag name, which says to rename it. It stops on a file that holds a problem. What it cannot tell it proposes, and does not declare, each with the bumpit modules add that declares it: the directories a line of version tags that no module owns may be the releases of, as one module per line, and the directories whose Helm chart or public Node.js package gives a version of its own. A module is proposed as shipped by the Go modules whose //go:embed patterns reach it, and by none when no pattern does, which is all bumpit sees. It runs each command without writing before it prints it, over what the Go modules and the commands before it would write, and says why when it would be refused, so they are safe to follow in that order. It writes the file last, so that it writes nothing when it cannot make up the proposals. The paths of the proposals are relative to --repo, and the Go modules it lists are named as the file writes them, relative to the top of the repository.",
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := validateOutputFormat(output); err != nil {
 				return err
@@ -97,6 +97,9 @@ func writeInitConfig(text *strings.Builder, report InitReport) {
 	}
 	for _, module := range report.Unnameable {
 		fmt.Fprintf(text, "no entry can name %s, so rename the directory to list its Go module: %s\n", module.Directory, module.Reason)
+	}
+	for _, module := range report.Untaggable {
+		fmt.Fprintf(text, "no tag can carry %s, so rename the directory to version and list its Go module: %s\n", module.Directory, module.Reason)
 	}
 }
 

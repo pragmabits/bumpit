@@ -218,7 +218,7 @@ func (f *moduleEditFlags) modulesFile(command *cobra.Command) (string, error) {
 	case err != nil:
 		return "", err
 	case source.top == "":
-		return "", errNoRepository(f.repository)
+		return "", errNoRepository(f.repository, source.noTop)
 	}
 	f.top = source.top
 

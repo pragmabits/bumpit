@@ -459,7 +459,7 @@ func commitFileWithBody(t *testing.T, repositoryPath, name, content, subject, bo
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
-	runGit(t, repositoryPath, "add", name)
+	runGit(t, repositoryPath, "add", "--", name)
 	arguments := []string{"commit", "-m", subject}
 	if body != "" {
 		arguments = append(arguments, "-m", body)

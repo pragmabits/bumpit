@@ -40,7 +40,8 @@ func TestRepositoryFindingsReadsNoCodeOfTheModules(t *testing.T) {
 // not run in parallel.
 func TestCLIEndToEndReadsTheRepositoryOnce(t *testing.T) {
 	const proposals = 6
-	// goModules are those of initGoRepository, whose prefixes only the check asks of.
+	// goModules are those of initGoRepository, whose prefixes only init, of those no
+	// entry lists, and the check ask of.
 	const goModules = 2
 
 	binaryPath := buildCLI(t)
@@ -56,7 +57,7 @@ func TestCLIEndToEndReadsTheRepositoryOnce(t *testing.T) {
 		arguments []string
 		prefixes  int
 	}{
-		{arguments: []string{"init"}, prefixes: proposals},
+		{arguments: []string{"init"}, prefixes: proposals + goModules},
 		{arguments: []string{"modules", "check"}, prefixes: proposals + goModules},
 		{arguments: []string{"modules", "add", "charts/chart0"}, prefixes: 1},
 		{arguments: []string{"modules", "set", "charts/chart0", "-T", "first/v"}, prefixes: 2},

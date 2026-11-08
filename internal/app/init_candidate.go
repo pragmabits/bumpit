@@ -50,7 +50,11 @@ type InitReport struct {
 	UnlistedReason string   `json:"unlisted_reason,omitempty"`
 	// Unnameable are the Go modules in a directory no entry can name, each with
 	// why.
-	Unnameable []LeftOutDirectory  `json:"unnameable,omitempty"`
+	Unnameable []LeftOutDirectory `json:"unnameable,omitempty"`
+	// Untaggable are the Go modules in a directory an entry can name but git takes
+	// in no tag name, each with why: init leaves them out, since the directory is
+	// to take another name before bumpit can version the module.
+	Untaggable []LeftOutDirectory  `json:"untaggable,omitempty"`
 	TagLines   []TagLine           `json:"tag_lines"`
 	Manifests  []ManifestCandidate `json:"manifests"`
 	// Unreadable are the manifests that could have been candidates but
@@ -97,9 +101,18 @@ func Init(opts InitOptions) (InitReport, error) {
 		}
 		finder.rehearsal.files[target] = []byte(initialConfig)
 	}
-	directories, unnameable := splitNameable(finder.unlistedGoModules())
+	nameable, unnameable := splitNameable(finder.unlistedGoModules())
 	report.Unnameable = unnameable
+	taggable, untaggable, err := finder.splitTaggable(nameable)
+	if err != nil {
+		return InitReport{}, err
+	}
+	report.Untaggable = untaggable
+	directories := goModuleDirectories(taggable)
 	listing := report.listGoModules(finder, directories, finder.rehearsal)
+	if failure := failureToAsk(listing); failure != nil {
+		return InitReport{}, failure
+	}
 
 	if report.TagLines, err = finder.tagLines(); err != nil {
 		return InitReport{}, err
@@ -118,7 +131,9 @@ func Init(opts InitOptions) (InitReport, error) {
 
 // writeConfig writes what the rehearsal proved: the new file, and the Go modules
 // unless listing says why they cannot be listed. A file the edit cannot change
-// stops nothing else init does, and the report says why.
+// stops nothing else init does, and the report says why. The edit asks the
+// repository nothing its rehearsal did not, whose answers the snapshot keeps, so
+// that what it fails with is about the file.
 func (r *InitReport) writeConfig(finder *candidateFinder, directories []string, listing error) error {
 	if r.Created {
 		if err := createConfig(r.Config); err != nil {
@@ -137,19 +152,49 @@ func (r *InitReport) writeConfig(finder *candidateFinder, directories []string, 
 	return nil
 }
 
-// splitNameable keeps the directories of Go modules an entry can name, and says why
-// of the others.
-func splitNameable(directories []string) ([]string, []LeftOutDirectory) {
-	var nameable []string
+// splitNameable keeps the Go modules in a directory an entry can name, and says
+// why of the others.
+func splitNameable(modules []repositoryModule) ([]repositoryModule, []LeftOutDirectory) {
+	var nameable []repositoryModule
 	var unnameable []LeftOutDirectory
-	for _, directory := range directories {
-		if reason := whyNoEntryNames(directory); reason != "" {
-			unnameable = append(unnameable, LeftOutDirectory{Directory: directory, Reason: reason})
+	for _, module := range modules {
+		if reason := whyNoEntryNames(module.directories[0]); reason != "" {
+			unnameable = append(unnameable, LeftOutDirectory{Directory: module.directories[0], Reason: reason})
 			continue
 		}
-		nameable = append(nameable, directory)
+		nameable = append(nameable, module)
 	}
 	return nameable, unnameable
+}
+
+// splitTaggable keeps the Go modules in a directory git takes a tag name from, and
+// says why of the others, whose directory is to take another name before bumpit
+// can version them. An error is git failing to answer.
+func (f *candidateFinder) splitTaggable(modules []repositoryModule) ([]repositoryModule, []LeftOutDirectory, error) {
+	var taggable []repositoryModule
+	var untaggable []LeftOutDirectory
+	for _, module := range modules {
+		renamed, err := f.snapshot.takesNoTagName(module)
+		if err != nil {
+			return nil, nil, err
+		}
+		if renamed {
+			finding := invalidTagNameFinding(module)
+			untaggable = append(untaggable, LeftOutDirectory{Directory: module.directories[0], Reason: finding.What + ": " + finding.Why})
+			continue
+		}
+		taggable = append(taggable, module)
+	}
+	return taggable, untaggable, nil
+}
+
+// goModuleDirectories are the directories of Go modules, one each.
+func goModuleDirectories(modules []repositoryModule) []string {
+	directories := make([]string, 0, len(modules))
+	for _, module := range modules {
+		directories = append(directories, module.directories[0])
+	}
+	return directories
 }
 
 // whyNoEntryNames says what keeps an entry of the file from naming the directory of
@@ -328,16 +373,16 @@ func (f *candidateFinder) readBase() error {
 	return nil
 }
 
-// unlistedGoModules lists the directories of the Go modules no entry of the
-// config lists, in the order of the modules.
-func (f *candidateFinder) unlistedGoModules() []string {
-	var directories []string
+// unlistedGoModules lists the Go modules no entry of the config lists, in the
+// order of the modules.
+func (f *candidateFinder) unlistedGoModules() []repositoryModule {
+	var unlisted []repositoryModule
 	for _, module := range f.modules {
 		if !module.withoutGoMod() && !listsDirectory(f.declarations, module.directories[0]) {
-			directories = append(directories, module.directories[0])
+			unlisted = append(unlisted, module)
 		}
 	}
-	return directories
+	return unlisted
 }
 
 // tagLines lists the tag lines no module owns, each with the one candidate it
@@ -362,7 +407,9 @@ func (f *candidateFinder) tagLines() ([]TagLine, error) {
 	for index := range lines {
 		guesses := guessDirectories(lines[index].Prefix, f.tracked, f.modules)
 		if len(guesses) == 0 {
-			lines[index].Command, lines[index].Refused = f.giveToModule(lines[index].Prefix, tags)
+			if lines[index].Command, lines[index].Refused, err = f.giveToModule(lines[index].Prefix, tags); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		candidate, err := f.lineCandidate(lines[index].Prefix, guesses)
@@ -377,18 +424,18 @@ func (f *candidateFinder) tagLines() ([]TagLine, error) {
 // giveToModule is the command that gives a tag line to the module that left it
 // behind, as one does when its go.mod goes and its name gives it another prefix,
 // which it rehearses, or why that command would be refused. Both are empty when no
-// module left it behind.
-func (f *candidateFinder) giveToModule(prefix string, tags []string) (command, refused string) {
+// module left it behind. An error is a failure to ask.
+func (f *candidateFinder) giveToModule(prefix string, tags []string) (command, refused string, err error) {
 	index := f.moduleLeftBehind(prefix, tags)
 	if index < 0 {
-		return "", ""
+		return "", "", nil
 	}
 	words := append([]string{"modules", "set", f.moduleArgument(f.modules[index]), "-T", prefix}, f.context.moduleFlags()...)
-	if err := f.rehearsal.run(words); err != nil {
-		return "", refusalReason(err)
+	if refused, err = f.rehearsal.run(words); err != nil || refused != "" {
+		return "", refused, err
 	}
 	f.modules[index].tagPrefix = prefix
-	return commandText(words), ""
+	return commandText(words), "", nil
 }
 
 // moduleLeftBehind is the index among the modules of the one declared module that
@@ -421,7 +468,11 @@ func (f *candidateFinder) lineCandidate(prefix string, guesses []string) (Candid
 
 	declaration := ModuleDeclaration{Directories: directories}
 	name := prefixName(prefix)
-	oneDirectoryNames := len(directories) == 1 && (directories[0] == name || f.nameTaken(name))
+	taken, err := f.nameTaken(name)
+	if err != nil {
+		return Candidate{}, err
+	}
+	oneDirectoryNames := len(directories) == 1 && (directories[0] == name || taken)
 	if !oneDirectoryNames {
 		declaration.Name = name
 	}
@@ -454,11 +505,17 @@ func (f *candidateFinder) splitGuesses(guesses []string) ([]string, []LeftOutDir
 	return kept, leftOut
 }
 
-// nameTaken reports a name some module has, or that is the directory of one.
-func (f *candidateFinder) nameTaken(name string) bool {
+// nameTaken reports a name some module has, or that is the directory of one as
+// the runs read a name, from the top of the repository through the links it
+// tracks. An error is a failure to ask.
+func (f *candidateFinder) nameTaken(name string) (bool, error) {
+	directory, err := f.snapshot.directoryOfName(name)
+	if err != nil {
+		return false, err
+	}
 	return slices.ContainsFunc(f.modules, func(module repositoryModule) bool {
-		return module.named && module.name == name || module.owns(name)
-	})
+		return module.named && module.name == name || module.owns(directory)
+	}), nil
 }
 
 // foundManifest is a manifest that gives its directory a version.
@@ -517,7 +574,8 @@ func (f *candidateFinder) isFree(directory string) bool {
 // the repository: shipped by the Go modules whose //go:embed patterns reach it,
 // and by none when no pattern does. Its command is rehearsed after the commands
 // printed before it: when that refuses it, the candidate carries why in place of
-// the command, and takes no directory from those printed after it.
+// the command, and takes no directory from those printed after it. A failure to
+// ask while it runs is the error.
 func (f *candidateFinder) candidate(declaration ModuleDeclaration) (Candidate, error) {
 	declaration.ShippedBy = &[]string{}
 	module := declaredRepositoryModule(declaration)
@@ -539,8 +597,10 @@ func (f *candidateFinder) candidate(declaration ModuleDeclaration) (Candidate, e
 
 	declaration.ShippedBy = &carriers
 	words := f.commandWords(candidate)
-	if err := f.rehearsal.run(words); err != nil {
-		candidate.Refused = refusalReason(err)
+	if candidate.Refused, err = f.rehearsal.run(words); err != nil {
+		return Candidate{}, err
+	}
+	if candidate.Refused != "" {
 		return candidate, nil
 	}
 	candidate.Command = commandText(words)
@@ -577,14 +637,11 @@ func (f *candidateFinder) moduleArgument(module repositoryModule) string {
 }
 
 // nameIsAPathToAnother reports whether the name of module, read as a path from
-// where init ran, is the directory of another module.
+// where init ran, links followed, is the directory of another module.
 func (f *candidateFinder) nameIsAPathToAnother(module repositoryModule) bool {
-	relative, err := filepath.Rel(f.top, filepath.Join(f.base, filepath.FromSlash(module.name)))
-	if err != nil {
-		return false
-	}
+	directory := commandLineDirectory(f.top, f.base, module.name)
 	return slices.ContainsFunc(f.modules, func(other repositoryModule) bool {
-		return other.name != module.name && other.owns(filepath.ToSlash(relative))
+		return other.name != module.name && other.owns(directory)
 	})
 }
 

@@ -24,9 +24,6 @@ func newNextCmd() *cobra.Command {
 				return err
 			}
 
-			if err := validateOutputFormat(flags.output); err != nil {
-				return err
-			}
 			if flags.output == "json" {
 				return writeJSON(outputWriter, releasePlan)
 			}

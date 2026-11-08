@@ -121,6 +121,7 @@ func TestLoadConfigRefusesModuleNames(t *testing.T) {
 		{name: "several directories and no name", declaration: "directories: [web, docs]\n    shippedBy: []", message: "modules: web, docs: several directories need a name"},
 		{name: "shipped by its own name", declaration: "name: site\n    directories: [web]\n    shippedBy: [site]", message: "modules: site: shippedBy lists the module itself"},
 		{name: "shipped by its own directory", declaration: "name: site\n    directories: [web]\n    shippedBy: [web]", message: "modules: site: shippedBy lists the module itself"},
+		{name: "shipped twice by one module", declaration: "name: site\n    directories: [web]\n    shippedBy: [stack, stack]", message: "modules: site: shippedBy lists stack twice"},
 	}
 	for _, testCase := range cases {
 		_, err := loadConfigText(t, "modules:\n  - "+testCase.declaration+"\n")

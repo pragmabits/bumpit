@@ -589,12 +589,12 @@ func TestCLIEndToEndAGoModuleNoEntryCanName(t *testing.T) {
 	}
 
 	reviewed, passed := readCheck(t, binaryPath, repositoryPath)
-	item := itemOf(t, reviewed.Review, ruleGoModuleUnlisted)
-	if passed || item.Subject != directory || item.Command != "" || !strings.Contains(item.How, "rename the directory") || !strings.Contains(item.How, "no entry can name it") {
+	item := itemOf(t, reviewed.Blocking, ruleInvalidTagName)
+	if passed || item.Subject != directory || item.Command != "" || !strings.Contains(item.How, "rename its directory") {
 		t.Errorf("passed %v, item %+v, want it to fail since no tag can carry the directory", passed, item)
 	}
-	if strings.Contains(item.How, "edit it by hand") || strings.Contains(item.Why, "versioned all the same") || !strings.Contains(item.Why, "glob character") {
-		t.Errorf("item = %+v, promises what it cannot", item)
+	if countRule(reviewed.Review, ruleGoModuleUnlisted) != 0 {
+		t.Errorf("review = %+v, lists again what the renaming that blocks the runs resolves", reviewed.Review)
 	}
 
 	output, err = runCLIIn(repositoryPath, binaryPath, "modules", "-d")
@@ -611,23 +611,23 @@ func TestRehearseWritesNothing(t *testing.T) {
 	repositoryPath := initHomepageRepository(t)
 	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
 
-	if err := newRehearsal().run([]string{"modules", "add", "web/homepage", "-r", repositoryPath}); err != nil {
-		t.Fatalf("the rehearsal returned %v", err)
+	if refused := rehearse(t, newRehearsal(), []string{"modules", "add", "web/homepage", "-r", repositoryPath}); refused != "" {
+		t.Fatalf("the rehearsal refused it: %s", refused)
 	}
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Errorf("the rehearsal created %s: %v", configPath, err)
 	}
 
-	if err := newRehearsal().run([]string{"modules", "add", "web/missing", "-r", repositoryPath}); err == nil || !strings.Contains(err.Error(), "web/missing matches no tracked file") {
-		t.Errorf("the rehearsal of a command the proof refuses returned %v", err)
+	if refused := rehearse(t, newRehearsal(), []string{"modules", "add", "web/missing", "-r", repositoryPath}); !strings.Contains(refused, "web/missing matches no tracked file") {
+		t.Errorf("the rehearsal of a command the proof refuses gave %q", refused)
 	}
-	if err := newRehearsal().run([]string{"modules", "add", "web/homepage", "-B", "-r", repositoryPath}); err == nil || !strings.Contains(err.Error(), "unknown shorthand flag") {
-		t.Errorf("the rehearsal of a command the flags refuse returned %v", err)
+	if refused := rehearse(t, newRehearsal(), []string{"modules", "add", "web/homepage", "-B", "-r", repositoryPath}); !strings.Contains(refused, "unknown shorthand flag") {
+		t.Errorf("the rehearsal of a command the flags refuse gave %q", refused)
 	}
 
 	writeFile(t, configPath, "output: xml\n")
-	if err := newRehearsal().run([]string{"config", "set", "output", "text", "-r", repositoryPath}); err != nil {
-		t.Errorf("the rehearsal of a key returned %v", err)
+	if refused := rehearse(t, newRehearsal(), []string{"config", "set", "output", "text", "-r", repositoryPath}); refused != "" {
+		t.Errorf("the rehearsal of a key was refused: %s", refused)
 	}
 	expectFile(t, configPath, "output: xml\n")
 }

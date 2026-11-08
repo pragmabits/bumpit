@@ -23,6 +23,7 @@ const (
 	ruleInvalidTagPrefix       = "invalid-tag-prefix"
 	ruleRootTagPrefix          = "root-tag-prefix"
 	ruleShippedByItself        = "shipped-by-itself"
+	ruleCarrierListedTwice     = "carrier-listed-twice"
 	ruleGoEntryDirectories     = "go-entry-directories"
 	ruleGoEntryKeys            = "go-entry-keys"
 	ruleShippedByMissing       = "shipped-by-missing"

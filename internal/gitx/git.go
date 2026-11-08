@@ -152,8 +152,12 @@ func (c Client) IsAncestor(ancestor, descendant string) (bool, error) {
 
 // ValidTagName reports whether git accepts name as the name of a tag. It
 // fails when git itself fails, rather than take that for a refusal of the
-// name.
+// name. A name that starts with - passes check-ref-format under refs/tags/,
+// but git tag refuses it.
 func (c Client) ValidTagName(name string) (bool, error) {
+	if strings.HasPrefix(name, "-") {
+		return false, nil
+	}
 	_, stderr, err := c.run("check-ref-format", "refs/tags/"+name)
 	var exit *exec.ExitError
 	switch {
@@ -192,16 +196,20 @@ func (c Client) TrackedFiles(pathspec string) ([]string, error) {
 	return files, nil
 }
 
-// TagExists reports whether a tag with the given name exists, on any branch.
+// TagExists reports whether a tag with the given name exists, on any branch. It
+// fails when git itself fails, rather than take that for a tag that does not
+// exist: git says that by ending with 1 and nothing written.
 func (c Client) TagExists(name string) (bool, error) {
 	_, stderr, err := c.run("rev-parse", "-q", "--verify", "refs/tags/"+name)
-	if err != nil {
-		if stderr == "" {
-			return false, nil
-		}
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1 && stderr == "":
+		return false, nil
+	default:
 		return false, gitError("rev-parse -q --verify refs/tags/"+name, stderr, err)
 	}
-	return true, nil
 }
 
 // CreateAnnotatedTag creates an annotated tag at HEAD, locally.
@@ -228,9 +236,27 @@ func (c Client) run(arguments ...string) (string, string, error) {
 	return stdout.String(), strings.TrimSpace(stderr.String()), err
 }
 
+// Error is git failing to answer: a command that could not run, or that ended
+// with an error no answer of the client reads.
+type Error struct {
+	command string
+	stderr  string
+	cause   error
+}
+
 func gitError(command, stderr string, err error) error {
-	if stderr == "" {
-		return fmt.Errorf("git %s: %w", command, err)
+	return &Error{command: command, stderr: stderr, cause: err}
+}
+
+// Error says the command and what git wrote of the failure, else the failure
+// itself.
+func (e *Error) Error() string {
+	if e.stderr == "" {
+		return fmt.Sprintf("git %s: %v", e.command, e.cause)
 	}
-	return fmt.Errorf("git %s: %s", command, stderr)
+	return fmt.Sprintf("git %s: %s", e.command, e.stderr)
+}
+
+func (e *Error) Unwrap() error {
+	return e.cause
 }

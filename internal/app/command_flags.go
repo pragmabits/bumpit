@@ -127,6 +127,9 @@ func (f *releasePlanFlags) applyConfig(command *cobra.Command) (*Config, error) 
 		overrideString(commandFlags, "pre", &f.preRelease, config.PreRelease)
 		overrideBool(commandFlags, "promote", &f.promote, config.Promote)
 	}
+	if err := checkFlagValues(f.defaults()); err != nil {
+		return nil, err
+	}
 
 	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
 	return config, err
@@ -181,6 +184,9 @@ func (f *latestCommandFlags) applyConfig(command *cobra.Command) (*Config, error
 		overrideString(flags, "repo", &f.repository, config.Repository)
 		overrideString(flags, "match", &f.tagMatch, config.TagMatch)
 		overrideString(flags, "output", &f.output, config.Output)
+	}
+	if err := checkFlagValues(f.defaults()); err != nil {
+		return nil, err
 	}
 
 	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
@@ -259,6 +265,9 @@ func (f *tagCommandFlags) applyConfig(command *cobra.Command) (*Config, error) {
 		overrideString(flags, "pre", &f.preRelease, config.PreRelease)
 		overrideBool(flags, "promote", &f.promote, config.Promote)
 	}
+	if err := checkFlagValues(f.defaults()); err != nil {
+		return nil, err
+	}
 
 	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
 	return config, err
@@ -334,6 +343,9 @@ func (f *modulesCommandFlags) applyConfig(command *cobra.Command) error {
 		overrideString(flags, "repo", &f.repository, config.Repository)
 		overrideString(flags, "output", &f.output, config.Output)
 		overrideBool(flags, "allow-dirty", &f.allowDirty, config.AllowDirty)
+	}
+	if err := checkFlagValues(f.defaults()); err != nil {
+		return err
 	}
 	f.declarations, err = readDeclarations(f.configPath != "", f.repository, config, configPath)
 	return err

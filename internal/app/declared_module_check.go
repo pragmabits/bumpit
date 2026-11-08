@@ -46,29 +46,45 @@ func packageFindings(snapshot *repositorySnapshot, top string, tracked trackedTr
 	return findings
 }
 
-// nameFindings lists a name that is the directory of another module: the
-// commands could not tell the two apart, and shippedBy calls a module with no
-// name of its own by its directory.
-func nameFindings(modules []repositoryModule) []Finding {
+// nameFindings lists a name that is the directory of another module as a command
+// line reads it from the top of the repository, through the links the repository
+// tracks: the commands could not tell the two apart, and shippedBy calls a module
+// with no name of its own by its directory. A link only this working tree holds
+// is no problem of the file, which says the same in every clone. An error is a
+// failure to ask.
+func nameFindings(snapshot *repositorySnapshot, modules []repositoryModule) ([]Finding, error) {
 	var findings []Finding
 	for index, module := range modules {
 		if !module.named {
 			continue
 		}
+		directory, err := snapshot.directoryOfName(module.name)
+		if err != nil {
+			return nil, err
+		}
 		for otherIndex, other := range modules {
-			if otherIndex != index && other.owns(module.name) {
+			if otherIndex != index && other.owns(directory) {
 				findings = append(findings, Finding{
 					Rule:    ruleNameIsADirectory,
 					Subject: module.name,
 					Other:   other.name,
 					What:    "the name is the directory of another module",
-					Why:     "the commands could not tell it from " + other.name,
+					Why:     whyNameIsADirectory(module.name, directory, other.name),
 					How:     "give the module another name",
 				})
 			}
 		}
 	}
-	return findings
+	return findings, nil
+}
+
+// whyNameIsADirectory says why name cannot be told from the module other, whose
+// directory it is, through a link when that directory is not the name itself.
+func whyNameIsADirectory(name, directory, other string) string {
+	if directory == name {
+		return "the commands could not tell it from " + other
+	}
+	return "a link makes it " + directory + ", so the commands could not tell it from " + other
 }
 
 // checkDeclaredModule lists what the repository contradicts of the module. An
@@ -152,11 +168,11 @@ func tagPrefixFindings(snapshot *repositorySnapshot, module repositoryModule, mo
 			findings = append(findings, finding)
 		}
 	}
-	valid, err := snapshot.validTagName(prefix + "0.0.0")
+	renamed, err := snapshot.takesNoTagName(module)
 	if err != nil {
 		return nil, err
 	}
-	if !valid {
+	if renamed {
 		findings = append(findings, invalidTagNameFinding(module))
 	}
 	return findings, nil

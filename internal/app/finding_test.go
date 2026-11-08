@@ -82,11 +82,12 @@ func TestEveryRefusalSaysWhatWhyAndHow(t *testing.T) {
 		{Name: "zzroot", Directories: []string{"h"}, TagPrefix: "v", ShippedBy: &[]string{}},
 		{Name: "zzself", Directories: []string{"i"}, ShippedBy: &[]string{"zzself"}},
 		{Name: "zzcarrier", Directories: []string{"j"}, ShippedBy: &[]string{"./k"}},
+		{Name: "zzcarriedtwice", Directories: []string{"m"}, ShippedBy: &[]string{"n", "n"}},
 		{Name: "zzsame", Directories: []string{"j"}, ShippedBy: &[]string{}},
 		{Name: "zzsame", Directories: []string{"l"}, ShippedBy: &[]string{}},
 	}
 	findings := declarationFindings(declarations)
-	rules := []string{ruleNoDirectories, ruleInvalidPath, ruleDirectoryListedTwice, ruleDirectoryInside, ruleNameNeeded, ruleInvalidName, rulePathIsOwnDirectory, ruleInvalidTagPrefix, ruleRootTagPrefix, ruleShippedByItself, ruleDirectoryDeclaredTwice, ruleNameGivenTwice}
+	rules := []string{ruleNoDirectories, ruleInvalidPath, ruleDirectoryListedTwice, ruleDirectoryInside, ruleNameNeeded, ruleInvalidName, rulePathIsOwnDirectory, ruleInvalidTagPrefix, ruleRootTagPrefix, ruleShippedByItself, ruleCarrierListedTwice, ruleDirectoryDeclaredTwice, ruleNameGivenTwice}
 	checkFindings(t, findings, rules)
 
 	repositoryPath := initGoRepository(t)
@@ -163,7 +164,7 @@ func TestConfigKeyFindings(t *testing.T) {
 	t.Parallel()
 
 	promote := true
-	findings := configKeyFindings(Config{Repository: "/does/not/exist", Output: "xml", PreRelease: "not a label!", Promote: &promote, StartVersion: "nope"})
+	findings := configKeyFindings(Config{Repository: "/does/not/exist", TagMatch: "--no-merged=HEAD", Output: "xml", PreRelease: "not a label!", Promote: &promote, StartVersion: "nope"})
 	subjects := map[string]bool{}
 	for _, finding := range findings {
 		subjects[finding.Subject] = true
@@ -171,7 +172,7 @@ func TestConfigKeyFindings(t *testing.T) {
 			t.Errorf("finding %+v says too little", finding)
 		}
 	}
-	for _, key := range []string{"repository", "output", "preRelease", "promote", "startVersion"} {
+	for _, key := range []string{"repository", "tagMatch", "output", "preRelease", "promote", "startVersion"} {
 		if !subjects[key] {
 			t.Errorf("no finding of %s among %+v", key, findings)
 		}

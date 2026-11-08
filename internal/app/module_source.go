@@ -21,6 +21,8 @@ type moduleSource struct {
 	// config there, empty when it has none.
 	top       string
 	topConfig string
+	// noTop is what git said when it found no top, nil inside a repository.
+	noTop error
 	// given reports a --config that declares modules.
 	given bool
 	// atTop reports that the config of the run is the one at the top.
@@ -38,7 +40,7 @@ type moduleSource struct {
 func findModuleSource(explicit bool, findTop func() (string, error), config *Config, configPath string) (moduleSource, error) {
 	source := moduleSource{given: explicit && config != nil && config.Modules != nil}
 	var err error
-	if source.top, source.topConfig, err = findTopConfig(findTop); err != nil {
+	if source.top, source.topConfig, source.noTop, err = findTopConfig(findTop); err != nil {
 		return source, err
 	}
 	source.atTop = config != nil && sameFile(configPath, source.topConfig)
@@ -53,9 +55,10 @@ func errModulesBelowTop(configPath, top string) error {
 }
 
 // errNoRepository is what a command that needs the top of the repository says
-// outside one.
-func errNoRepository(path string) error {
-	return fmt.Errorf("%s is in no git repository, whose modules bumpit.yaml would declare", path)
+// outside one, with why git found none: outside a repository, or in one git
+// refuses, such as one whose owner it does not trust.
+func errNoRepository(path string, noTop error) error {
+	return fmt.Errorf("%s is in no git repository, whose modules bumpit.yaml would declare: %w", path, noTop)
 }
 
 // fromConfig reports that the modules come from the config of the run, which it
@@ -83,18 +86,18 @@ func readDeclarations(explicit bool, repository string, config *Config, configPa
 }
 
 // findTopConfig is the top of the repository findTop finds and the config there,
-// empty when it has none. Outside a repository both are empty: the command
-// reports that repository is none.
-func findTopConfig(findTop func() (string, error)) (string, string, error) {
-	top, err := findTop()
-	if err != nil {
-		return "", "", nil
+// empty when it has none. Outside a repository both are empty, and noTop is what
+// git said: the command reports that repository is none, and why.
+func findTopConfig(findTop func() (string, error)) (top, topConfig string, noTop, err error) {
+	top, noTop = findTop()
+	if noTop != nil {
+		return "", "", noTop, nil
 	}
-	topConfig, err := findConfig(top)
+	topConfig, err = findConfig(top)
 	if errors.Is(err, ErrConfigNotFound) {
-		return top, "", nil
+		return top, "", nil, nil
 	}
-	return top, topConfig, err
+	return top, topConfig, nil, err
 }
 
 // topDeclarations reads the modules the config at topConfig declares, a config

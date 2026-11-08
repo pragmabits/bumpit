@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 
 	"github.com/pragmabits/bumpit/internal/gitx"
 	"github.com/spf13/cobra"
@@ -44,14 +45,36 @@ func rehearsalOf(command *cobra.Command) *rehearsal {
 
 // run runs the bumpit command with the words as the command line would, its
 // flags, the config file it reads, its edit and the proof of the edit, and returns
-// why it would be refused. A command that would be refused leaves the rehearsal
-// as it was.
-func (r *rehearsal) run(words []string) error {
+// why it would be refused, empty when it would not. A command that would be
+// refused leaves the rehearsal as it was. A failure to ask is no reason to refuse
+// the command, and nothing to say of the command: that failure is the error.
+func (r *rehearsal) run(words []string) (string, error) {
 	rootCommand := newRootCmd()
 	rootCommand.SetArgs(words)
 	rootCommand.SetOut(io.Discard)
 	rootCommand.SetErr(io.Discard)
-	return rootCommand.ExecuteContext(context.WithValue(context.Background(), rehearsalKey{}, r))
+	err := rootCommand.ExecuteContext(context.WithValue(context.Background(), rehearsalKey{}, r))
+	if failure := failureToAsk(err); failure != nil {
+		return "", failure
+	}
+	if err != nil {
+		return refusalReason(err), nil
+	}
+	return "", nil
+}
+
+// failureToAsk is the failure behind err when it is one to ask, nil else: git
+// failing to answer, or a file that cannot be read. Nothing was refused then,
+// since what was asked has no answer. A go.mod that cannot be read is another,
+// but a command reads every go.mod before it rehearses or proves anything.
+func failureToAsk(err error) error {
+	if failure, failed := errors.AsType[*gitx.Error](err); failed {
+		return failure
+	}
+	if failure, failed := errors.AsType[*fs.PathError](err); failed {
+		return failure
+	}
+	return nil
 }
 
 // text is what the file at target holds in the rehearsal: what a command before

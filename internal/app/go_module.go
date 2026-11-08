@@ -172,11 +172,11 @@ func goTagNameFindings(snapshot *repositorySnapshot, modules []repositoryModule)
 		if module.withoutGoMod() {
 			continue
 		}
-		valid, err := snapshot.validTagName(module.tagPrefix + "0.0.0")
+		renamed, err := snapshot.takesNoTagName(module)
 		if err != nil {
 			return nil, err
 		}
-		if !valid {
+		if renamed {
 			findings = append(findings, invalidTagNameFinding(module))
 		}
 	}
@@ -191,7 +191,7 @@ func (m *moduleScope) tagNameError(client gitx.Client) error {
 	if m == nil || m.module.withoutGoMod() {
 		return nil
 	}
-	valid, err := client.ValidTagName(m.module.tagPrefix + "0.0.0")
+	valid, err := client.ValidTagName(firstTagName(m.module.tagPrefix))
 	if err != nil {
 		return err
 	}

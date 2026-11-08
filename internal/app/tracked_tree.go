@@ -1,7 +1,10 @@
 package app
 
 import (
+	"os"
 	"path"
+	"path/filepath"
+	"strings"
 
 	"github.com/pragmabits/bumpit/internal/gitx"
 )
@@ -35,6 +38,40 @@ func newTrackedTree(files []string) trackedTree {
 		}
 	}
 	return tree
+}
+
+// maxLinks is how many links a name may lead through, as many as Linux follows,
+// before it is taken for a loop of links.
+const maxLinks = 40
+
+// followLinks is the directory, relative to the top at top, that name means read
+// as a path from there in every clone of the repository: the links the repository
+// tracks are followed, as the command line follows them, and those only this
+// working tree holds are not. A name that leads out of the repository, through a
+// link to an absolute path or a loop of links means itself, since no directory of
+// a module lies there.
+func (t trackedTree) followLinks(top, name string) string {
+	resolved := "."
+	pending := strings.Split(name, "/")
+	for links := 0; len(pending) > 0; {
+		next := path.Join(resolved, pending[0])
+		pending = pending[1:]
+		target, err := os.Readlink(filepath.Join(top, filepath.FromSlash(next)))
+		if err != nil || !t.present[next] {
+			resolved = next
+			continue
+		}
+		links++
+		if links > maxLinks || filepath.IsAbs(target) {
+			return name
+		}
+		joined := path.Join(path.Dir(next), filepath.ToSlash(target))
+		if joined == ".." || strings.HasPrefix(joined, "../") {
+			return name
+		}
+		resolved, pending = ".", append(strings.Split(joined, "/"), pending...)
+	}
+	return resolved
 }
 
 // holds reports whether the repository tracks entry: a file, a directory

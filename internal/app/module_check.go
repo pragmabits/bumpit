@@ -111,8 +111,9 @@ func (c *moduleChecker) check() error {
 	if !c.readDeclarations() {
 		return nil
 	}
-	if c.reportFileFindings() {
-		return nil
+	found, err := c.reportFileFindings()
+	if err != nil || found {
+		return err
 	}
 	return c.checkRepository()
 }
@@ -164,10 +165,11 @@ func (c *moduleChecker) findSource() error {
 // reviewNoRepository says what the keys of the file hold wrong, the repository key
 // perhaps being why there is no repository, and else that there is none.
 func (c *moduleChecker) reviewNoRepository() error {
-	if c.reportFileFindings() {
-		return nil
+	found, err := c.reportFileFindings()
+	if err != nil || found {
+		return err
 	}
-	return errNoRepository(c.repository)
+	return errNoRepository(c.repository, c.source.noTop)
 }
 
 // reviewNoFile says that the repository has no config to check, and how to give
@@ -177,7 +179,11 @@ func (c *moduleChecker) reviewNoFile() error {
 	if _, err := c.snapshot().goModules(); err != nil {
 		return err
 	}
-	c.report.Review = []CheckItem{c.noFileItem()}
+	item, err := c.noFileItem()
+	if err != nil {
+		return err
+	}
+	c.report.Review = []CheckItem{item}
 	return nil
 }
 
@@ -209,15 +215,17 @@ func (c *moduleChecker) readDeclarations() bool {
 
 // reportFileFindings fills the report with what is wrong with the file alone, and
 // reports whether there is any: such a file stops the check before the repository,
-// which it could not be compared with.
-func (c *moduleChecker) reportFileFindings() bool {
+// which it could not be compared with. An error is a failure to ask, beside the
+// items made up until then.
+func (c *moduleChecker) reportFileFindings() (bool, error) {
 	findings := c.fileFindings()
 	if len(findings) == 0 {
-		return false
+		return false, nil
 	}
+	items, err := c.keyItems(findings)
 	c.report.FileOnly = true
-	c.report.Blocking = c.keyItems(findings)
-	return true
+	c.report.Blocking = items
+	return true, err
 }
 
 // readTop reads the tag pattern of the config of the run, whose tags that run
@@ -257,7 +265,7 @@ func keysOf[T any]() []string {
 	return keys
 }
 
-func (c *moduleChecker) noFileItem() CheckItem {
+func (c *moduleChecker) noFileItem() (CheckItem, error) {
 	words := append([]string{"init"}, c.context.repositoryFlags()...)
 	return c.rehearsal.item(Finding{
 		Rule:    ruleNoFile,
@@ -280,17 +288,22 @@ func (c *moduleChecker) fileFindings() []Finding {
 
 // keyItems are the items of the findings of a file, the only ones with a command
 // being the keys, whose value nothing depends on keeping, unless two of them
-// conflict, which of them goes being a choice.
-func (c *moduleChecker) keyItems(findings []Finding) []CheckItem {
+// conflict, which of them goes being a choice. An error is a failure to ask, which
+// comes with the items made up until then.
+func (c *moduleChecker) keyItems(findings []Finding) ([]CheckItem, error) {
 	items := make([]CheckItem, 0, len(findings))
 	for _, finding := range findings {
 		var words []string
 		if finding.Rule == ruleInvalidKey && finding.Other == "" {
 			words = append([]string{"config", "unset", finding.Subject}, c.context.keyFlags()...)
 		}
-		items = append(items, c.rehearsal.item(finding, words))
+		item, err := c.rehearsal.item(finding, words)
+		if err != nil {
+			return items, err
+		}
+		items = append(items, item)
 	}
-	return items
+	return items, nil
 }
 
 // checkRepository compares the modules with the repository, and fills the report
@@ -320,7 +333,9 @@ func (c *moduleChecker) checkRepository() error {
 		return err
 	}
 
-	c.report.Blocking = finder.blockingItems(append(mergeConflicts(found.findings), tagNames...))
+	if c.report.Blocking, err = finder.blockingItems(append(mergeConflicts(found.findings), tagNames...)); err != nil {
+		return err
+	}
 	review, err := finder.reviewItems()
 	c.report.Review = review
 	if err != nil {
@@ -354,8 +369,9 @@ func mergeConflicts(findings []Finding) []Finding {
 }
 
 // blockingItems are the items of the problems the repository shows. Only an
-// embed has a command, once for each module: the others take a choice.
-func (f *candidateFinder) blockingItems(findings []Finding) []CheckItem {
+// embed has a command, once for each module: the others take a choice. An error
+// is a failure to ask, which comes with the items made up until then.
+func (f *candidateFinder) blockingItems(findings []Finding) ([]CheckItem, error) {
 	items := make([]CheckItem, 0, len(findings))
 	commanded := map[string]bool{}
 	for _, finding := range findings {
@@ -364,9 +380,13 @@ func (f *candidateFinder) blockingItems(findings []Finding) []CheckItem {
 			commanded[finding.Subject] = true
 			words = f.carriersCommand(finding.Subject, findings)
 		}
-		items = append(items, f.rehearsal.item(finding, words))
+		item, err := f.rehearsal.item(finding, words)
+		if err != nil {
+			return items, err
+		}
+		items = append(items, item)
 	}
-	return items
+	return items, nil
 }
 
 // carriersCommand is the words of the bumpit modules set that gives the module
@@ -400,9 +420,9 @@ func (f *candidateFinder) carriersCommand(name string, findings []Finding) []str
 // their own. The tags with no prefix, which no module can own, are left out. An
 // error comes with the items made up until then.
 func (f *candidateFinder) reviewItems() ([]CheckItem, error) {
-	items := []CheckItem{}
-	for _, directory := range f.unlistedGoModules() {
-		items = append(items, f.unlistedGoModuleItem(directory))
+	items, err := f.unlistedGoModuleItems()
+	if err != nil {
+		return items, err
 	}
 
 	lines, err := f.tagLines()
@@ -427,21 +447,41 @@ func (f *candidateFinder) reviewItems() ([]CheckItem, error) {
 	return items, nil
 }
 
+// unlistedGoModuleItems are the items of the Go modules no entry lists, but those in
+// a directory git takes in no tag name, which block the runs: the new name for the
+// directory that problem asks for comes before an entry can list it. An error comes
+// with the items made up until then.
+func (f *candidateFinder) unlistedGoModuleItems() ([]CheckItem, error) {
+	items := []CheckItem{}
+	for _, module := range f.unlistedGoModules() {
+		renamed, err := f.snapshot.takesNoTagName(module)
+		if err != nil {
+			return items, err
+		}
+		if renamed {
+			continue
+		}
+		item, err := f.unlistedGoModuleItem(module.directories[0])
+		if err != nil {
+			return items, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 // unlistedGoModuleItem is the item of a Go module no entry lists, with the command
-// that lists it, unless no entry can name its directory: there is then nothing to
-// write, by a command or by hand, and only another name for the directory helps.
-func (f *candidateFinder) unlistedGoModuleItem(directory string) CheckItem {
+// that lists it. unlistedGoModuleItems gives it only directories git takes a tag
+// name from, and an entry can name each of them: the characters that keep an entry
+// from naming a directory, those of a glob and a : at the start, are ones git
+// refuses in a tag name. An error is a failure to ask.
+func (f *candidateFinder) unlistedGoModuleItem(directory string) (CheckItem, error) {
 	finding := Finding{
 		Rule:    ruleGoModuleUnlisted,
 		Subject: directory,
 		What:    "go.mod with no entry in bumpit.yaml",
 		Why:     "it is versioned all the same, but the file does not list it",
 		How:     "list it, as bumpit init also does",
-	}
-	if reason := whyNoEntryNames(directory); reason != "" {
-		finding.Why = reason
-		finding.How = "rename the directory to list it, since no entry can name it"
-		return CheckItem{Finding: finding}
 	}
 	words := append([]string{"modules", "add", f.pathArgument(f.display(directory))}, f.context.moduleFlags()...)
 	return f.rehearsal.item(finding, words)
@@ -507,16 +547,20 @@ func candidateItem(finding Finding, candidate Candidate, how string) CheckItem {
 
 // item is the item of the finding with the command of words, which runs in the
 // rehearsal first, so that bumpit prints none it would refuse. One that would be
-// refused gives its reason in place of the command.
-func (r *rehearsal) item(finding Finding, words []string) CheckItem {
+// refused gives its reason in place of the command. An error is a failure to ask.
+func (r *rehearsal) item(finding Finding, words []string) (CheckItem, error) {
 	if words == nil {
-		return CheckItem{Finding: finding}
+		return CheckItem{Finding: finding}, nil
 	}
-	if err := r.run(words); err != nil {
-		finding.How += "; edit it by hand, since the command would be refused: " + refusalReason(err)
-		return CheckItem{Finding: finding}
+	refused, err := r.run(words)
+	switch {
+	case err != nil:
+		return CheckItem{}, err
+	case refused != "":
+		finding.How += "; edit it by hand, since the command would be refused: " + refused
+		return CheckItem{Finding: finding}, nil
 	}
-	return CheckItem{Finding: finding, Command: commandText(words)}
+	return CheckItem{Finding: finding, Command: commandText(words)}, nil
 }
 
 // errModulesBlocked is what bumpit modules check fails with when a run would stop.

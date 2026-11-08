@@ -121,6 +121,9 @@ func (e configEdit) prove(edited []byte, absolutePath string, want, before Confi
 		return fmt.Errorf("the edited %s would not load, so it is left as it was: %w", e.path, err)
 	}
 	if err := e.proveRepository(got, before, subjects); err != nil {
+		if _, refused := errors.AsType[Finding](err); !refused {
+			return fmt.Errorf("the edited %s could not be checked against the repository, so it is left as it was: %w", e.path, err)
+		}
 		return fmt.Errorf("the edited %s is refused, so it is left as it was: %w", e.path, err)
 	}
 	return nil

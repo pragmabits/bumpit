@@ -212,7 +212,11 @@ func discoverRepositoryModulesIn(snapshot *repositorySnapshot, declarations []Mo
 	}
 
 	modules, findings := assembleModules(goModules, declarations)
-	if err := firstFinding(append(findings, nameFindings(modules)...)); err != nil {
+	names, err := nameFindings(snapshot, modules)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := firstFinding(append(findings, names...)); err != nil {
 		return nil, "", fmt.Errorf("modules: %w", err)
 	}
 	if !slices.ContainsFunc(modules, repositoryModule.withoutGoMod) {
@@ -280,7 +284,11 @@ func repositoryFindings(snapshot *repositorySnapshot, declarations []ModuleDecla
 		return repositoryReport{}, err
 	}
 	modules, findings := assembleModules(goModules, declarations)
-	findings = append(findings, nameFindings(modules)...)
+	names, err := nameFindings(snapshot, modules)
+	if err != nil {
+		return repositoryReport{}, err
+	}
+	findings = append(findings, names...)
 
 	tracked, err := snapshot.tracked()
 	if err != nil {

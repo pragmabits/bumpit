@@ -262,6 +262,94 @@ func TestCLIEndToEndCheckFindsAGoNameThatIsADirectory(t *testing.T) {
 	}
 }
 
+// TestCLIEndToEndANameALinkMakesADirectory covers a name that a link at the top of
+// the repository makes the directory of another module, as --module reads it from
+// there: the command line could not tell the two apart, so the runs refuse it as
+// they refuse a name that is that directory, the check lists it, and no edit writes
+// it.
+func TestCLIEndToEndANameALinkMakesADirectory(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitNewFile(t, repositoryPath, "web/front/index.html", "front", "feat: add the front")
+	commitNewFile(t, repositoryPath, "web/back/index.html", "back", "feat: add the back")
+	if err := os.Symlink("web/back", filepath.Join(repositoryPath, "front")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+	runGit(t, repositoryPath, "add", "--", "front")
+	runGit(t, repositoryPath, "commit", "-m", "chore: link the back")
+	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
+	binaryPath := buildCLI(t)
+
+	writeFile(t, configPath, "modules:\n  - name: front\n    directories: [web/front]\n    shippedBy: []\n  - name: back\n    directories: [web/back]\n    shippedBy: []\n")
+	expectFailure(t, binaryPath, []string{"next", "-d", "-g", "web/front", "-r", repositoryPath}, "front: the name is the directory of another module")
+	report, passed := readCheck(t, binaryPath, repositoryPath)
+	item := itemOf(t, report.Blocking, ruleNameIsADirectory)
+	if passed || item.Subject != "front" || item.Other != "back" || !strings.Contains(item.Why, "web/back") {
+		t.Errorf("passed %v, report %+v", passed, report)
+	}
+
+	unnamed := "modules:\n  - directories: [web/front]\n    shippedBy: []\n  - name: back\n    directories: [web/back]\n    shippedBy: []\n"
+	writeFile(t, configPath, unnamed)
+	expectFailure(t, binaryPath, []string{"modules", "set", "web/front", "-e", "front", "-r", repositoryPath}, "the name is the directory of another module")
+	expectFile(t, configPath, unnamed)
+}
+
+// TestCLIEndToEndANameALinkGitDoesNotTrackMakesADirectory covers a link only this
+// working tree holds: the file says the same in every clone, so the runs and the
+// check take the name as it is written, and only the command line here, which
+// follows the link, refuses the name read from the top.
+func TestCLIEndToEndANameALinkGitDoesNotTrackMakesADirectory(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initRepository(t)
+	commitNewFile(t, repositoryPath, "web/front/index.html", "front", "feat: add the front")
+	commitNewFile(t, repositoryPath, "web/back/index.html", "back", "feat: add the back")
+	if err := os.Symlink("web/back", filepath.Join(repositoryPath, "front")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+	writeFile(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - name: front\n    directories: [web/front]\n    shippedBy: []\n  - name: back\n    directories: [web/back]\n    shippedBy: []\n")
+	binaryPath := buildCLI(t)
+
+	expectContains(t, binaryPath, []string{"next", "-d", "-g", "web/front", "-r", repositoryPath}, "front/v0.1.0")
+	if report, _ := readCheck(t, binaryPath, repositoryPath); countRule(report.Blocking, ruleNameIsADirectory) != 0 {
+		t.Errorf("blocking = %+v, holds a link git does not track against the file", report.Blocking)
+	}
+	expectFailure(t, binaryPath, []string{"next", "-d", "-g", "front", "-r", repositoryPath}, "front is the name of one module and the directory web/back of another")
+}
+
+// TestCLIEndToEndProposalsFollowTheLinksOfAName covers the commands the check
+// proposes beside links at the top of the repository, which the command line
+// follows: one calls by its path a module whose name a link makes the directory
+// of another, and a proposal gives no name a link makes such a directory.
+func TestCLIEndToEndProposalsFollowTheLinksOfAName(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initGoRepository(t)
+	commitNewFile(t, repositoryPath, "web/front/index.html", "front", "feat: add the front")
+	commitNewFile(t, repositoryPath, "web/back/index.html", "back", "feat: add the back")
+	commitNewFile(t, repositoryPath, "web/site.go", "package web\n\nimport _ \"embed\"\n\n//go:embed front/index.html\nvar page string\n", "feat: serve the front")
+	commitNewFile(t, repositoryPath, "deploy/site/index.html", "site", "feat: deploy the site")
+	runGit(t, repositoryPath, "tag", "-a", "site/v1.0.0", "-m", "Release site/v1.0.0")
+	for _, link := range []string{"front", "site"} {
+		if err := os.Symlink("web/back", filepath.Join(repositoryPath, link)); err != nil {
+			t.Fatalf("Symlink returned error: %v", err)
+		}
+	}
+	runGit(t, repositoryPath, "add", "--", "front", "site")
+	runGit(t, repositoryPath, "commit", "-m", "chore: link the back")
+	writeFile(t, filepath.Join(repositoryPath, "bumpit.yaml"), "modules:\n  - directories: [.]\n  - directories: [tool]\n  - name: front\n    directories: [web/front]\n    shippedBy: []\n  - name: back\n    directories: [web/back]\n    shippedBy: []\n")
+	binaryPath := buildCLI(t)
+
+	report, _ := readCheck(t, binaryPath, repositoryPath)
+	if item := itemOf(t, report.Blocking, ruleEmbedWithoutCarrier); !strings.HasPrefix(item.Command, "bumpit modules set web/front ") {
+		t.Errorf("the embed: %+v, want the module called by its path", item)
+	}
+	if item := itemOf(t, report.Review, ruleTagsUnowned); !strings.Contains(item.Command, "-T site/v") || strings.Contains(item.Command, "-e site") {
+		t.Errorf("the tag line: %+v, want no name a link makes the directory of another module", item)
+	}
+}
+
 // TestCLIEndToEndCheckFindsThePrefixOfAModuleOfTheSameName covers a module called
 // as the directory of another, which takes that one's tag prefix too: the check
 // says both problems, and what it says to do resolves them one at a time.
@@ -634,8 +722,8 @@ func TestCLIEndToEndCheckKeepsWhatItFoundBeforeAFailure(t *testing.T) {
 }
 
 // TestCLIEndToEndCheckWithNoFileThatInitWouldStopAt covers the command the check
-// prints with no file: it is rehearsed as any other, and what stops the runs
-// fails the check, which init then does not send anyone back to.
+// prints with no file: it is rehearsed as any other, and what init could not read
+// fails the check, which then sends no one to init, nor init back to the check.
 func TestCLIEndToEndCheckWithNoFileThatInitWouldStopAt(t *testing.T) {
 	t.Parallel()
 
@@ -667,10 +755,9 @@ func TestCLIEndToEndCheckWithNoFileThatInitWouldStopAt(t *testing.T) {
 		}
 		writeFile(t, filepath.Join(repositoryPath, "pkg"), "now a file")
 
-		report, passed := readCheck(t, binaryPath, repositoryPath)
-		item := itemOf(t, report.Review, ruleNoFile)
-		if !passed || item.Command != "" || !strings.Contains(item.How, "not a directory") {
-			t.Errorf("passed %v, item %+v", passed, item)
+		output, err := runCLI(binaryPath, "modules", "check", "-r", repositoryPath)
+		if err == nil || !strings.Contains(output, "not a directory") || strings.Contains(output, "refuse") || strings.Contains(output, "bumpit init") {
+			t.Errorf("check returned %v\n%s", err, output)
 		}
 		if _, err := os.Stat(filepath.Join(repositoryPath, "bumpit.yaml")); !os.IsNotExist(err) {
 			t.Errorf("the check created a file: %v", err)

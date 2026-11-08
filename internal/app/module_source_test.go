@@ -52,10 +52,11 @@ func TestFindModuleSource(t *testing.T) {
 		}
 	}
 
-	outside := func() (string, error) { return "", errors.New("not a git repository") }
+	notARepository := errors.New("not a git repository")
+	outside := func() (string, error) { return "", notARepository }
 	got, err := findModuleSource(false, outside, withModules, belowPath)
-	if err != nil || got != (moduleSource{}) {
-		t.Errorf("outside a repository: findModuleSource = %+v, %v, want nothing to compare with", got, err)
+	if err != nil || got != (moduleSource{noTop: notARepository}) {
+		t.Errorf("outside a repository: findModuleSource = %+v, %v, want nothing to compare with, and why", got, err)
 	}
 }
 

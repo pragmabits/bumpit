@@ -272,14 +272,26 @@ func tagPrefixTextFindings(declaration ModuleDeclaration) []Finding {
 
 // shippedByTextFindings lists carriers that are wrong whatever the repository
 // holds. Whether the module needs shippedBy at all only the repository can
-// tell: a Go module takes none.
+// tell: a Go module takes none. A carrier listed again is that one problem,
+// whatever else is wrong with it, which its first listing says.
 func shippedByTextFindings(declaration ModuleDeclaration) []Finding {
 	if declaration.ShippedBy == nil {
 		return nil
 	}
 	name := declaration.identity()
+	carriers := *declaration.ShippedBy
 	var findings []Finding
-	for _, carrier := range *declaration.ShippedBy {
+	for index, carrier := range carriers {
+		if slices.Contains(carriers[:index], carrier) {
+			findings = append(findings, Finding{
+				Rule:    ruleCarrierListedTwice,
+				Subject: name,
+				What:    "shippedBy lists " + carrier + " twice",
+				Why:     "a module carries another once",
+				How:     "list it once",
+			})
+			continue
+		}
 		if carrier == name || slices.Contains(declaration.Directories, carrier) {
 			findings = append(findings, Finding{
 				Rule:    ruleShippedByItself,

@@ -147,6 +147,30 @@ func TestCLIEndToEndRewritesReferences(t *testing.T) {
 	expectFile(t, configPath, "modules:\n  - name: root\n    directories: [.]\n  - directories: [web/homepage]\n    shippedBy: [root, root]\n")
 }
 
+// TestCLIEndToEndACarrierListedTwice covers a shippedBy that lists a module twice,
+// which the runs refuse as they refuse a directory listed twice: the check lists
+// it, and no edit writes it.
+func TestCLIEndToEndACarrierListedTwice(t *testing.T) {
+	t.Parallel()
+
+	repositoryPath := initCarriedRepository(t)
+	configPath := filepath.Join(repositoryPath, "bumpit.yaml")
+	binaryPath := buildCLI(t)
+
+	once := "modules:\n  - name: stack\n    directories: [.]\n  - directories: [web/homepage]\n    shippedBy: [stack]\n"
+	writeFile(t, configPath, once)
+	expectFailure(t, binaryPath, []string{"modules", "add", "web/brand", "-b", "stack", "-b", "stack", "-r", repositoryPath}, "shippedBy lists stack twice")
+	expectFile(t, configPath, once)
+
+	writeFile(t, configPath, "modules:\n  - name: stack\n    directories: [.]\n  - directories: [web/homepage]\n    shippedBy: [stack, stack]\n")
+	expectFailure(t, binaryPath, []string{"next", "-r", repositoryPath}, "web/homepage: shippedBy lists stack twice")
+	report, passed := readCheck(t, binaryPath, repositoryPath)
+	item := itemOf(t, report.Blocking, ruleCarrierListedTwice)
+	if passed || !report.FileOnly || item.Subject != "web/homepage" {
+		t.Errorf("passed %v, report %+v", passed, report)
+	}
+}
+
 // TestCLIEndToEndRefusesAnEmptyPath covers a path that comes out empty, as an
 // unset variable does in a shell: it names nothing, and least of all --repo.
 func TestCLIEndToEndRefusesAnEmptyPath(t *testing.T) {
